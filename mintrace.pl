@@ -106,6 +106,9 @@ check_syntax_interp_op(if(_, L1, L2), Labels) :-
     check_label_exists(L1, Labels),
     check_label_exists(L2, Labels).
 
+check_syntax_interp_op(jump(L), Labels) :-
+    check_label_exists(L, Labels).
+
 check_syntax_interp_op(return(_), _).
 
 check_label_exists(L, Labels) :-
@@ -122,6 +125,10 @@ interp(op(ResultVar, Op, Arg1, Arg2, NextOp), Labels, Env, Res) :-
     interp(NextOp, Labels, NEnv, Res).
 
 interp(promote(_, L), Labels, Env, Res) :-
+    lookup(L, Labels, Code),
+    interp(Code, Labels, Env, Res).
+
+interp(jump(L), Labels, Env, Res) :-
     lookup(L, Labels, Code),
     interp(Code, Labels, Env, Res).
 
@@ -169,7 +176,7 @@ trace(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Env,
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
     trace(Rest, Labels, NEnv, T, TraceAnchor, Res).
 
-trace(promote(Arg, L), Labels, Env, guard(Arg, Val, if(const(1), L, L), T), TraceAnchor, Res) :-
+trace(promote(Arg, L), Labels, Env, guard(Arg, Val, jump(L), T), TraceAnchor, Res) :-
     resolve(Arg, Env, Val),
     trace_jump(L, Labels, Env, T, TraceAnchor, Res).
 
@@ -178,7 +185,10 @@ trace(return(V), _, Env,
     resolve(V, Env, Val),
     print(Val), nl.
 
-trace(if(Arg, L1, L2), Labels, Env, guard(Arg, Val, if(const(1), OL, OL), T), TraceAnchor, Res) :-
+trace(jump(L), Labels, Env, guard(Arg, Val, jump(OL), T), TraceAnchor, Res) :-
+    trace_jump(L, Labels, Env, T, TraceAnchor, Res).
+
+trace(if(Arg, L1, L2), Labels, Env, guard(Arg, Val, jump(OL), T), TraceAnchor, Res) :-
     resolve(Arg, Env, Val),
     (Val == 0 ->
         L = L2, OL = L1
@@ -413,7 +423,7 @@ program(loop, [
         op(x2, mul, var(x), const(2),
         op(x3, add, var(x2), const(1),
         op(i, sub, var(i), var(x3),
-        if(const(1), l, l))))]).
+        jump(l))))]).
 
 
 % bytecode interpreter
@@ -472,27 +482,27 @@ program(bytecode_interpreter, [
           if(var(c), bytecode_loop, op_jump_if_a_jump)))),
     op_jump_if_a_jump/
           op(pc, assign, var(target), const(0),
-          if(const(1), bytecode_loop, bytecode_loop)),
+          jump(bytecode_loop)),
     op_mov_a_r0/
-          op(r0, assign, var(a), const(0), if(const(1), bytecode_loop, bytecode_loop)),
+          op(r0, assign, var(a), const(0), jump(bytecode_loop)),
     op_mov_a_r1/
-          op(r1, assign, var(a), const(0), if(const(1), bytecode_loop, bytecode_loop)),
+          op(r1, assign, var(a), const(0), jump(bytecode_loop)),
     op_mov_a_r2/
-          op(r2, assign, var(a), const(0), if(const(1), bytecode_loop, bytecode_loop)),
+          op(r2, assign, var(a), const(0), jump(bytecode_loop)),
     op_mov_r0_a/
-          op(a, assign, var(r0), const(0), if(const(1), bytecode_loop, bytecode_loop)),
+          op(a, assign, var(r0), const(0), jump(bytecode_loop)),
     op_mov_r1_a/
-          op(a, assign, var(r1), const(0), if(const(1), bytecode_loop, bytecode_loop)),
+          op(a, assign, var(r1), const(0), jump(bytecode_loop)),
     op_mov_r2_a/
-          op(a, assign, var(r2), const(0), if(const(1), bytecode_loop, bytecode_loop)),
+          op(a, assign, var(r2), const(0), jump(bytecode_loop)),
     op_add_r0_to_a/
-          op(a, add, var(a), var(r0), if(const(1), bytecode_loop, bytecode_loop)),
+          op(a, add, var(a), var(r0), jump(bytecode_loop)),
     op_add_r1_to_a/
-          op(a, add, var(a), var(r1), if(const(1), bytecode_loop, bytecode_loop)),
+          op(a, add, var(a), var(r1), jump(bytecode_loop)),
     op_add_r2_to_a/
-          op(a, add, var(a), var(r2), if(const(1), bytecode_loop, bytecode_loop)),
+          op(a, add, var(a), var(r2), jump(bytecode_loop)),
     op_decr_a/
-          op(a, sub, var(a), const(1), if(const(1), bytecode_loop, bytecode_loop)),
+          op(a, sub, var(a), const(1), jump(bytecode_loop)),
     op_return_a/
         return(var(a))]).
 
