@@ -162,11 +162,10 @@ do_trace(L, Labels, Env, Res) :-
 
 check_syntax_trace(op(_, _, _, _, T), Labels) :-
     check_syntax_trace(T, Labels).
-check_syntax_trace(guard(_, _, C, T), Labels) :-
-    check_syntax_interp([compensation/C | Labels]),
+check_syntax_trace(guard(_, _, L, T), Labels) :-
+    lookup(L, Labels, _),
     check_syntax_trace(T, Labels).
-check_syntax_trace(loop).
-
+check_syntax_trace(loop, _).
 
 % trace(Code, Labels, Env, Trace, TraceAnchor) trace the code Code in environment Env
 % yielding trace Trace. The TraceAnchor contains information about where to end
@@ -176,7 +175,7 @@ trace(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Env,
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
     trace(Rest, Labels, NEnv, T, TraceAnchor, Res).
 
-trace(promote(Arg, L), Labels, Env, guard(Arg, Val, jump(L), T), TraceAnchor, Res) :-
+trace(promote(Arg, L), Labels, Env, guard(Arg, Val, L, T), TraceAnchor, Res) :-
     resolve(Arg, Env, Val),
     trace_jump(L, Labels, Env, T, TraceAnchor, Res).
 
@@ -185,10 +184,10 @@ trace(return(V), _, Env,
     resolve(V, Env, Val),
     print(Val), nl.
 
-trace(jump(L), Labels, Env, guard(Arg, Val, jump(OL), T), TraceAnchor, Res) :-
+trace(jump(L), Labels, Env, T, TraceAnchor, Res) :-
     trace_jump(L, Labels, Env, T, TraceAnchor, Res).
 
-trace(if(Arg, L1, L2), Labels, Env, guard(Arg, Val, jump(OL), T), TraceAnchor, Res) :-
+trace(if(Arg, L1, L2), Labels, Env, guard(Arg, Val, OL, T), TraceAnchor, Res) :-
     resolve(Arg, Env, Val),
     (Val == 0 ->
         L = L2, OL = L1
@@ -199,11 +198,11 @@ trace(if(Arg, L1, L2), Labels, Env, guard(Arg, Val, jump(OL), T), TraceAnchor, R
     trace_jump(L, Labels, Env, T, TraceAnchor, Res).
 
 trace_jump(L, Labels, Env, loop, traceanchor(L, FullTrace), Res) :-
-    check_syntax_trace(FullTrace),
+    check_syntax_trace(FullTrace, Labels),
     write(trace), nl, write_trace(FullTrace), nl, % --
     do_optimize(FullTrace, Labels, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
-    runtrace(OptTrace, Labels, Env, OptTrace, Res).
+    runtrace_opt(OptTrace, Labels, Env, OptTrace, Res).
 
 trace_jump(L, Labels, Env, T, TraceAnchor, Res) :-
     lookup(L, Labels, Code),
@@ -241,6 +240,23 @@ runtrace(loop, Labels, Env, TraceFromStart, Res) :-
     runtrace(TraceFromStart, Labels, Env, TraceFromStart, Res).
 
 
+% runtrace_opt(Trace, Labels, Env, TraceFromStart) execute a trace Trace in environment Env
+% with the full trace being also given as argument TraceFromStart
+runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Env, TraceFromStart, Res) :-
+    interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
+    runtrace_opt(Rest, Labels, NEnv, TraceFromStart, Res).
+
+runtrace_opt(guard(Arg, C, SSAEnv, L, Rest), Labels, Env, TraceFromStart, Res) :-
+    resolve(Arg, Env, Val),
+    (Val == C ->
+        runtrace_opt(Rest, Labels, Env, TraceFromStart, Res)
+    ;
+        interp(CompensationCode, Labels, Env, Res)
+    ).
+
+runtrace_opt(loop, Labels, Env, TraceFromStart, Res) :-
+    runtrace_opt(TraceFromStart, Labels, Env, TraceFromStart, Res).
+
 
 % _______________ optimization _______________
 
@@ -256,10 +272,10 @@ optimize(op(ResultVar, Op, Arg1, Arg2, Rest), PEnv, NewTrace) :-
     pe_op(ResultVar, Op, Arg1, Arg2, PEnv, NEnv, NewTrace, RestTrace),
     optimize(Rest, NEnv, RestTrace).
 
-optimize(loop, PEnv, T) :-
+optimize(loop(PhiNodes), PEnv, T) :-
     generate_assignments(PEnv, loop, T).
 
-optimize(guard(Arg, C, CompensationCode, Rest), PEnv, NewTrace) :-
+optimize(guard(Arg, C, SSAEnv, L, Rest), PEnv, NewTrace) :-
     presolve(Arg, PEnv, Val),
     (Val = const(C1) ->
         ensure(C1 = C), % --
@@ -268,21 +284,15 @@ optimize(guard(Arg, C, CompensationCode, Rest), PEnv, NewTrace) :-
     ;
         Val = var(V),
         write_env(PEnv, V, C, NEnv),
-        generate_assignments(PEnv, CompensationCode, NCompensationCode),
-        NewTrace = guard(Arg, C, NCompensationCode, RestTrace)
+        trace,
+        NewTrace = guard(Arg, C, SSAEnv, ResumeVars, PEnv, L, RestTrace)
     ),
     optimize(Rest, NEnv, RestTrace).
 
-
-% _______________ optimization _______________
-
-% plookup(Name, PEnv, Res) lookup a variable Name in a partial environment Env
-% and return either var(Name), when the value of the variable is unknown in the
-% environment, or const(Value), when it is known. The environment is a list of
-% Name/Value terms.
-plookup(Name, [], var(Name)).
-plookup(Name, [Name/Value | _], const(Value)) :- !.
-plookup(Name, [_ | Rest], Value) :- plookup(Name, Rest, Value).
+update_resumevars([], _, []).
+update_resumevars([Var/Val1 | T1], PEnv, [Var/Val2 | T2]) :-
+    presolve(Val1, PEnv, Val2),
+    update_resumevars(T1, PEnv, T2).
 
 % presolve(Arg, Env, Val) turn an argument Arg (which can be either a variable
 % or a constant) into either var(Name), when the value of the variable is
@@ -305,89 +315,54 @@ pe_op(ResultVar, Op, Arg1, Arg2, PEnv, NEnv, Residual, RestResidual) :-
 
 % do_optimize(Trace, Labels, Env, OptimizedTrace) optimize a trace Trace, returning
 % OptimizedTrace
-do_optimize(Trace, Labels, Env, Trace).
+do_optimize(Trace, Labels, Env, OptimizedTrace) :-
+    initialize_ssa_env(Env, SSAEnv),
+    ssaify(Trace, SSAEnv, SSATrace),
+    trace,
+    optimize(SSATrace, [], OptimizedTrace).
 
-%OptimizedTrace) :-
-%    initialize_ssa_env(Env, SSAEnv),
-%    ssaify(Trace, SSAEnv, SSATrace, SSAEnv),
-%    optimize(SSATrace, [], OptimizedTrace).
-
-invent_new_var(Var, NewVar) :- gensym(var, NewVar).
+invent_new_var(Var, NewVar) :- gensym(Var, NewVar).
 
 initialize_ssa_env([], []).
 initialize_ssa_env([Var/_ | Rest1], [Var/var(Var) | Rest2]) :-
     initialize_ssa_env(Rest1, Rest2).
 
+sresolve(const(X), _, const(X)).
+sresolve(var(V), PEnv, X) :- lookup(V, PEnv, X).
 
-ssaify(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, op2(Res, Op, RArg1, RArg2, T), OrigEnv) :-
-    presolve(Arg1, SSAEnv, RArg1),
-    presolve(Arg2, SSAEnv, RArg2),
+ssaify(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, op(Res, Op, RArg1, RArg2, T)) :-
+    sresolve(Arg1, SSAEnv, RArg1),
+    sresolve(Arg2, SSAEnv, RArg2),
     invent_new_var(ResultVar, Res),
     write_env(SSAEnv, ResultVar, var(Res), NEnv),
-    ssaify(Rest, NEnv, T, OrigEnv).
+    ssaify(Rest, NEnv, T).
 
-ssaify(guard(V, C, CompensationCode, Rest), SSAEnv, NewTrace, OrigEnv) :-
-    ensure(ResumeVars == []),
-    lookup(V, SSAEnv, Val),
-    (Val == const(C) ->
-        ensure(C \= 0),
-        NewTrace = T
-    ;
-        Val = var(NV),
-        NewTrace = guard_true(NV, SSAEnv, L, T)
-    ),
-    ssaify(Rest, SSAEnv, T, OrigEnv).
+ssaify(guard(Arg, C, L, Rest), SSAEnv, guard(Val, C, SSAEnv, L, T)) :-
+    sresolve(Arg, SSAEnv, Val),
+    ssaify(Rest, SSAEnv, T).
 
-ssaify(loop, SSAEnv, NewTrace, OrigEnv) :-
-    generate_assignments(OrigEnv, SSAEnv, NewTrace).
+ssaify(loop, SSAEnv, loop(PhiNodes)) :-
+    generate_phi_nodes(SSAEnv, PhiNodes).
+
+generate_phi_nodes([], []).
+generate_phi_nodes([Var/var(Var) | T], T1) :- % loop invariant
+    !, generate_phi_nodes(T, T1).
+generate_phi_nodes([Var/var(Var1) | T], [Var/var(Var1) | T1]) :-
+    !, generate_phi_nodes(T, T1).
 
 
-% generate_assignments(PEnv, Trace) generate assignments from the partial
+% generate_assignments_ssa(PEnv, Trace) generate assignments from the partial
 % environment PEnv, returning Trace
-generate_assignments([], _, loop).
-generate_assignments([Var/_ | Tail], SSAEnv, T) :-
-    presolve(var(Var), SSAEnv, Arg),
-    (Arg == var(Var) ->
+generate_assignments_ssa([], _, loop).
+generate_assignments_ssa([Var/_ | Tail], SSAEnv, T) :-
+    sresolve(var(Var), SSAEnv, var(Var2)),
+    (Var2 == Var ->
         NT = T
     ;
-        T = assign(Var, Arg, NT)
+        T = op(Var, assign, var(Var2), const(0), NT)
     ),
-    generate_assignments(Tail, SSAEnv, NT).
+    generate_assignments_ssa(Tail, SSAEnv, NT).
 
-% optimize(Trace, PEnv, NewTrace) optimize trace Trace under partial
-% environment PEnv returning a new trace NewTrace
-optimize(op2(ResultVar, Op, Arg1, Arg2, Rest), PEnv, NewTrace) :-
-    presolve(Arg1, PEnv, RArg1),
-    presolve(Arg2, PEnv, RArg2),
-    (RArg1 = const(C1), RArg2 = const(C2) ->
-        do_op(Op, C1, C2, Res),
-        write_env(PEnv, ResultVar, Res, NEnv),
-        NewTrace = RestResidual
-    ;
-        remove_env(PEnv, ResultVar, NEnv),
-        NewTrace = op2(ResultVar, Op, RArg1, RArg2, RestResidual)
-    ),
-    optimize(Rest, NEnv, RestResidual).
-
-optimize(loop, _, loop).
-
-optimize(guard_value(V, C, ResumeVars, L, Rest), PEnv, NewTrace) :-
-    plookup(V, PEnv, Val),
-    (Val = const(C1) ->
-        ensure(C1 = C), % --
-        NewTrace = RestResidual,
-        NEnv = PEnv
-    ;
-        write_env(PEnv, V, C, NEnv),
-        update_resumevars(ResumeVars, PEnv, NResumeVars),
-        NewTrace = guard_value(V, C, NResumeVars, L, RestResidual)
-    ),
-    optimize(Rest, NEnv, RestResidual).
-
-update_resumevars([], _, []).
-update_resumevars([Var/Val1 | T1], PEnv, [Var/Val2 | T2]) :-
-    presolve(Val1, PEnv, Val2),
-    update_resumevars(T1, PEnv, T2).
 % _______________ example programs _______________
 
 
@@ -542,8 +517,9 @@ loop(X, Res) :-
     program(loop, Code),
     interp_label(b, Code, [i/X, x/3], Res).
 
-trace_loop(X) :-
-    do_trace(b, [i/X, x/3]).
+trace_loop(X, Res) :-
+    program(loop, Code),
+    do_trace(b, Code, [i/X, x/3], Res).
 
 
 run_interp(A, Res) :-
@@ -604,9 +580,6 @@ test(check_power) :-
 test(power, true(Res = 1024)) :-
     power(2, 10, Res).
 
-test(trace_power, true(Res = 1024)) :-
-    trace_power(2, 10, Res).
-
 test(check_loop) :-
     program(loop, P),
     check_syntax_interp(P).
@@ -622,5 +595,34 @@ test(check_interp) :-
 test(interp, true(Res = 256)) :-
     run_interp(16, Res).
 
+test(ssaify) :-
+    Env = [x/var(x), y/var(y), res/var(res), c/var(c)],
+    ssaify(op(res, mul, var(res), var(x),
+           op(y, sub, var(y), const(1),
+           op(c, ge, var(y), const(1),
+           guard(var(c), 1, power_done, loop)))),
+           Env, Res),
+    Res = op(Res1, mul, var(res), var(x),
+          op(Y1, sub, var(y), const(1),
+          op(C1, ge, var(Y1), const(1),
+          guard(var(C1), 1, [x/var(x), y/var(Y1), res/var(Res1), c/var(C1)], power_done,
+          loop([y/var(Y1), res/var(Res1), c/var(C1)]))))).
+
+test(optimize) :-
+    Loop = guard(var(x), 3, [i/var(i), x/var(x), x2/var(x2), x3/var(x3), c/var(c)], b2,
+           op(x21, mul, var(x), const(2),
+           op(x31, add, var(x21), const(1),
+           op(i1, sub, var(i), var(x31),
+           op(c2, ge, var(i1), const(0),
+           guard(var(c2), 1, [i/var(i1), x/var(x), x2/var(x21), x3/var(x31), c/var(c2)], l_done,
+           loop([i/var(i1), x2/var(x21), x3/var(x31), c/var(c2)]))))))),
+    trace,
+    optimize(Loop, [], _1504).
+
+test(trace_loop, true(Res = -5)) :-
+    trace_loop(100, Res).
+
+      %test(trace_power, true(Res = 1024)) :-
+      %    trace_power(2, 10, Res).
 
 :- end_tests(mintrace).
