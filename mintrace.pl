@@ -199,6 +199,7 @@ trace(if(Arg, L1, L2), Labels, Env, guard(Arg, Val, OL, T), TraceAnchor, Res) :-
 
 trace_jump(L, Labels, Env, loop, traceanchor(L, FullTrace), Res) :-
     check_syntax_trace(FullTrace, Labels),
+    !, % prevent more tracing
     write(trace), nl, write_trace(FullTrace), nl, % --
     do_optimize(FullTrace, Labels, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
@@ -211,6 +212,7 @@ trace_jump(L, Labels, Env, T, TraceAnchor, Res) :-
 
 % write_trace(Trace) print trace Trace in a readable way
 write_trace(loop) :- !, write('  loop'), nl.
+write_trace(loop(V)) :- !, write('  loop'), write(V), nl.
 write_trace(Op) :-
     Op =.. L,
     append(L0, [NextOp], L),
@@ -251,124 +253,87 @@ runtrace_opt(guard(Arg, C, SSAEnv, L, Rest), Labels, Env, TraceFromStart, Res) :
     (Val == C ->
         runtrace_opt(Rest, Labels, Env, TraceFromStart, Res)
     ;
-        interp(CompensationCode, Labels, Env, Res)
+        execute_phi(SSAEnv, Env, InterpEnv),
+        interp_label(L, Labels, InterpEnv, Res)
     ).
 
-runtrace_opt(loop, Labels, Env, TraceFromStart, Res) :-
-    runtrace_opt(TraceFromStart, Labels, Env, TraceFromStart, Res).
+runtrace_opt(loop(Renames), Labels, Env, TraceFromStart, Res) :-
+    execute_phi(Renames, Env, NewEnv),
+    runtrace_opt(TraceFromStart, Labels, NewEnv, TraceFromStart, Res).
 
+execute_phi([], _, []).
+execute_phi([Var/Val | T], Env, [Var/NVal | T1]) :-
+    (Val = const(C) ->
+        NVal = C
+    ;
+        Val = var(IVar),
+        lookup(IVar, Env, NVal)
+    ),
+    execute_phi(T, Env, T1).
 
 % _______________ optimization _______________
-
-% generate_assignments(PEnv, Trace) generate assignments from the partial
-% environment PEnv, returning Trace
-generate_assignments([], LastOp, LastOp).
-generate_assignments([Var/Val | Tail], LastOp, op(Var, assign, const(Val), const(0), T)) :-
-    generate_assignments(Tail, LastOp, T).
-
-% optimize(Trace, PEnv, NewTrace) optimize trace Trace under partial
-% environment PEnv returning a new trace NewTrace
-optimize(op(ResultVar, Op, Arg1, Arg2, Rest), PEnv, NewTrace) :-
-    pe_op(ResultVar, Op, Arg1, Arg2, PEnv, NEnv, NewTrace, RestTrace),
-    optimize(Rest, NEnv, RestTrace).
-
-optimize(loop(PhiNodes), PEnv, T) :-
-    generate_assignments(PEnv, loop, T).
-
-optimize(guard(Arg, C, SSAEnv, L, Rest), PEnv, NewTrace) :-
-    presolve(Arg, PEnv, Val),
-    (Val = const(C1) ->
-        ensure(C1 = C), % --
-        NewTrace = RestTrace,
-        NEnv = PEnv
-    ;
-        Val = var(V),
-        write_env(PEnv, V, C, NEnv),
-        trace,
-        NewTrace = guard(Arg, C, SSAEnv, ResumeVars, PEnv, L, RestTrace)
-    ),
-    optimize(Rest, NEnv, RestTrace).
-
-update_resumevars([], _, []).
-update_resumevars([Var/Val1 | T1], PEnv, [Var/Val2 | T2]) :-
-    presolve(Val1, PEnv, Val2),
-    update_resumevars(T1, PEnv, T2).
-
-% presolve(Arg, Env, Val) turn an argument Arg (which can be either a variable
-% or a constant) into either var(Name), when the value of the variable is
-% unknown in the environment, or const(Value), when it is known or the argument
-% is a constant.
-presolve(const(X), _, const(X)).
-presolve(var(V), PEnv, X) :- plookup(V, PEnv, X).
-
-pe_op(ResultVar, Op, Arg1, Arg2, PEnv, NEnv, Residual, RestResidual) :-
-    presolve(Arg1, PEnv, RArg1),
-    presolve(Arg2, PEnv, RArg2),
-    (RArg1 = const(C1), RArg2 = const(C2) ->
-        do_op(Op, C1, C2, Res),
-        write_env(PEnv, ResultVar, Res, NEnv),
-        RestResidual = Residual
-    ;
-        remove_env(PEnv, ResultVar, NEnv),
-        Residual = op(ResultVar, Op, RArg1, RArg2, RestResidual)
-    ).
-
+%
 % do_optimize(Trace, Labels, Env, OptimizedTrace) optimize a trace Trace, returning
 % OptimizedTrace
 do_optimize(Trace, Labels, Env, OptimizedTrace) :-
-    initialize_ssa_env(Env, SSAEnv),
-    ssaify(Trace, SSAEnv, SSATrace),
-    trace,
-    optimize(SSATrace, [], OptimizedTrace).
+    initialize_ssa_env(Env, SSAEnv, DefinedVars),
+    optimize(Trace, SSAEnv, DefinedVars, OptimizedTrace).
 
 invent_new_var(Var, NewVar) :- gensym(Var, NewVar).
 
-initialize_ssa_env([], []).
-initialize_ssa_env([Var/_ | Rest1], [Var/var(Var) | Rest2]) :-
-    initialize_ssa_env(Rest1, Rest2).
+initialize_ssa_env([], [], []).
+initialize_ssa_env([Var/_ | Rest1], [Var/var(Var) | Rest2], [Var | Rest3]) :-
+    initialize_ssa_env(Rest1, Rest2, Rest3).
 
 sresolve(const(X), _, const(X)).
 sresolve(var(V), PEnv, X) :- lookup(V, PEnv, X).
 
-ssaify(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, op(Res, Op, RArg1, RArg2, T)) :-
+generate_phi_nodes([], _, []).
+generate_phi_nodes([Var | Rest], SSAEnv, [Var/Val | Rest2]) :-
+    lookup(Var, SSAEnv, Val),
+    generate_phi_nodes(Rest, SSAEnv, Rest2).
+
+
+% optimize(Trace, SSAEnv, DefinedVars, NewTrace) optimize trace Trace under SSA-environment SSAEnv
+
+:- det(optimize/4).
+optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, DefinedVars, NewTrace) :-
     sresolve(Arg1, SSAEnv, RArg1),
     sresolve(Arg2, SSAEnv, RArg2),
-    invent_new_var(ResultVar, Res),
-    write_env(SSAEnv, ResultVar, var(Res), NEnv),
-    ssaify(Rest, NEnv, T).
-
-ssaify(guard(Arg, C, L, Rest), SSAEnv, guard(Val, C, SSAEnv, L, T)) :-
-    sresolve(Arg, SSAEnv, Val),
-    ssaify(Rest, SSAEnv, T).
-
-ssaify(loop, SSAEnv, loop(PhiNodes)) :-
-    generate_phi_nodes(SSAEnv, PhiNodes).
-
-generate_phi_nodes([], []).
-generate_phi_nodes([Var/var(Var) | T], T1) :- % loop invariant
-    !, generate_phi_nodes(T, T1).
-generate_phi_nodes([Var/var(Var1) | T], [Var/var(Var1) | T1]) :-
-    !, generate_phi_nodes(T, T1).
-
-
-% generate_assignments_ssa(PEnv, Trace) generate assignments from the partial
-% environment PEnv, returning Trace
-generate_assignments_ssa([], _, loop).
-generate_assignments_ssa([Var/_ | Tail], SSAEnv, T) :-
-    sresolve(var(Var), SSAEnv, var(Var2)),
-    (Var2 == Var ->
-        NT = T
+    (RArg1 = const(C1), RArg2 = const(C2) ->
+        do_op(Op, C1, C2, Res),
+        write_env(SSAEnv, ResultVar, const(Res), NEnv),
+        NewTrace = RestTrace
     ;
-        T = op(Var, assign, var(Var2), const(0), NT)
+        invent_new_var(ResultVar, Res),
+        write_env(SSAEnv, ResultVar, var(Res), NEnv),
+        NewTrace = op(Res, Op, RArg1, RArg2, RestTrace)
     ),
-    generate_assignments_ssa(Tail, SSAEnv, NT).
+    optimize(Rest, NEnv, DefinedVars, RestTrace).
+
+optimize(loop, SSAEnv, DefinedVars, loop(PhiNodes)) :-
+    generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes).
+
+optimize(guard(Arg, C, L, Rest), SSAEnv, DefinedVars, NewTrace) :-
+    sresolve(Arg, SSAEnv, Val),
+    (Val = const(C1) ->
+        ensure(C1 = C), % -- otherwise the loop is invalid
+        NEnv = SSAEnv,
+        NewTrace = RestTrace
+    ;
+        Arg = var(OrigVar),
+        Val = var(SSAVar),
+        write_env(SSAEnv, OrigVar, const(C), NEnv),
+        generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
+        NewTrace = guard(var(SSAVar), C, PhiNodes, L, RestTrace)
+    ),
+    optimize(Rest, NEnv, DefinedVars, RestTrace).
+
 
 % _______________ example programs _______________
 
 
 % power computes x ** y
-
-:- discontiguous power/2.
 
 program(power, [power/
                     op(res, assign, const(1), const(0),
@@ -528,23 +493,17 @@ run_interp(A, Res) :-
     program(bytecode_interpreter, Code),
     interp_label(bytecode_loop, Code, Env, Res).
 
-pe_interp(A) :-
-    bytecode_square(B),
-    Env = [bytecode/B, pc/0],
-    do_pe(bytecode_loop, Env, Label),
-    REnv = [a/A, r0/0, r1/0, r2/0],
-    block(Label, Code),
-    interp(Code, REnv).
-
-metatrace_interp(A) :-
+metatrace_interp(A, Res) :-
     bytecode_square(B),
     Env = [bytecode/B, pc/11, a/A, r0/A, r1/A, r2/0, target/2],
-    do_trace(op_jump_if_a_jump, Env).
+    program(bytecode_interpreter, Code),
+    do_trace(op_jump_if_a_jump, Code, Env, Res).
 
-trace_interp(A) :-
+trace_interp(A, Res) :-
     bytecode_square(B),
     Env = [bytecode/B, pc/2, a/A, r0/A, r1/A, r2/0],
-    do_trace(bytecode_loop, Env).
+    program(bytecode_interpreter, Code),
+    do_trace(bytecode_loop, Code, Env, Res).
 
 all :-
     write('power should all give 1024 '), nl,
@@ -595,34 +554,46 @@ test(check_interp) :-
 test(interp, true(Res = 256)) :-
     run_interp(16, Res).
 
-test(ssaify) :-
-    Env = [x/var(x), y/var(y), res/var(res), c/var(c)],
-    ssaify(op(res, mul, var(res), var(x),
-           op(y, sub, var(y), const(1),
-           op(c, ge, var(y), const(1),
-           guard(var(c), 1, power_done, loop)))),
-           Env, Res),
-    Res = op(Res1, mul, var(res), var(x),
-          op(Y1, sub, var(y), const(1),
-          op(C1, ge, var(Y1), const(1),
-          guard(var(C1), 1, [x/var(x), y/var(Y1), res/var(Res1), c/var(C1)], power_done,
-          loop([y/var(Y1), res/var(Res1), c/var(C1)]))))).
-
 test(optimize) :-
-    Loop = guard(var(x), 3, [i/var(i), x/var(x), x2/var(x2), x3/var(x3), c/var(c)], b2,
-           op(x21, mul, var(x), const(2),
-           op(x31, add, var(x21), const(1),
-           op(i1, sub, var(i), var(x31),
-           op(c2, ge, var(i1), const(0),
-           guard(var(c2), 1, [i/var(i1), x/var(x), x2/var(x21), x3/var(x31), c/var(c2)], l_done,
-           loop([i/var(i1), x2/var(x21), x3/var(x31), c/var(c2)]))))))),
+    Trace = guard(var(x), 3, b2,
+            op(x2, mul, var(x), const(2),
+            op(x3, add, var(x2), const(1),
+            op(i, sub, var(i), var(x3),
+            op(c, ge, var(i), const(0),
+            guard(var(c), 1, l_done, loop)))))),
     trace,
-    optimize(Loop, [], _1504).
+    optimize(Trace, [i/var(i), x/var(x), x2/var(x2), x3/var(x3), c/var(c)], [i, x, x2, x3, c], Res),
+    Res =   guard(var(x), 3, [i/var(i), x/var(x), x2/var(x2), x3/var(x3), c/var(c)], b2,
+            op(I1, sub, var(i), const(7),
+            op(C1, ge, var(I1), const(0),
+            guard(var(C1), 1, [i/var(I1), x/const(3), x2/const(6), x3/const(7), c/var(C1)], l_done,
+            loop([i/var(I1), x/const(3), x2/const(6), x3/const(7), c/const(1)]))))).
+
+test(optimize_guard_bug) :-
+    Trace = op(pc, add, var(source), const(0),
+            guard(var(pc), 1, l_done,
+            op(pc, add, var(pc), const(1),
+            loop))),
+    optimize(Trace, [source/var(source), pc/var(pc)], [source, pc], Res),
+    Res =   op(PC1, add, var(source), const(0),
+            guard(var(PC1), 1, [source/var(source), pc/var(PC1)], l_done,
+            loop([sourve/var(source), pc/const(2)]))).
+
+
+test(execute_phi, true(Res = [i/ -1, x/3, x2/6, x3/7, c/0])) :-
+    execute_phi([i/var(i2), x/const(3), x2/const(6), x3/const(7), c/var(c2)], [i/6, x/3, x2/6, x3/7, c/1, i2/ -1, c2/0], Res).
 
 test(trace_loop, true(Res = -5)) :-
     trace_loop(100, Res).
 
-      %test(trace_power, true(Res = 1024)) :-
-      %    trace_power(2, 10, Res).
+test(trace_power, true(Res = 1024)) :-
+     trace_power(2, 10, Res).
+
+test(trace_interp, true(Res = 256)) :-
+    trace_interp(16, Res).
+
+test(metatrace_interp, true(Res = 256)) :-
+    trace,
+    metatrace_interp(16, Res).
 
 :- end_tests(mintrace).
