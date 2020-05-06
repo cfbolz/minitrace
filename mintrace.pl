@@ -153,6 +153,12 @@ do_trace(L, Labels, Env, Res) :-
     lookup(L, Labels, StartCode),
     trace(StartCode, Labels, Env, ProducedTrace, traceanchor(L, ProducedTrace), Res).
 
+check_syntax_trace(op(_, _, _, _, T), Labels) :-
+    check_syntax_trace(T, Labels).
+check_syntax_trace(guard(_, _, C, T), Labels) :-
+    check_syntax_interp([compensation/C | Labels]),
+    check_syntax_trace(T, Labels).
+check_syntax_trace(loop).
 
 
 % trace(Code, Labels, Env, Trace, TraceAnchor) trace the code Code in environment Env
@@ -167,7 +173,7 @@ trace(promote(Arg, L), Labels, Env, guard(Arg, Val, if(const(1), L, L), T), Trac
     resolve(Arg, Env, Val),
     trace_jump(L, Labels, Env, T, TraceAnchor, Res).
 
-trace(return(V), Labels, Env,
+trace(return(V), _, Env,
       return(V), _, Val) :-
     resolve(V, Env, Val),
     print(Val), nl.
@@ -183,6 +189,7 @@ trace(if(Arg, L1, L2), Labels, Env, guard(Arg, Val, if(const(1), OL, OL), T), Tr
     trace_jump(L, Labels, Env, T, TraceAnchor, Res).
 
 trace_jump(L, Labels, Env, loop, traceanchor(L, FullTrace), Res) :-
+    check_syntax_trace(FullTrace),
     write(trace), nl, write_trace(FullTrace), nl, % --
     do_optimize(FullTrace, Labels, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
