@@ -227,23 +227,6 @@ write_trace(Op) :-
 
 % _______________ run traces _______________
 
-% runtrace(Trace, Labels, Env, TraceFromStart) execute a trace Trace in environment Env
-% with the full trace being also given as argument TraceFromStart
-runtrace(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Env, TraceFromStart, Res) :-
-    interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
-    runtrace(Rest, Labels, NEnv, TraceFromStart, Res).
-
-runtrace(guard(Arg, C, CompensationCode, Rest), Labels, Env, TraceFromStart, Res) :-
-    resolve(Arg, Env, Val),
-    (Val == C ->
-        runtrace(Rest, Labels, Env, TraceFromStart, Res)
-    ;
-        interp(CompensationCode, Labels, Env, Res)
-    ).
-
-runtrace(loop, Labels, Env, TraceFromStart, Res) :-
-    runtrace(TraceFromStart, Labels, Env, TraceFromStart, Res).
-
 
 % runtrace_opt(Trace, Labels, Env, TraceFromStart) execute a trace Trace in environment Env
 % with the full trace being also given as argument TraceFromStart
@@ -508,30 +491,6 @@ trace_interp(A, Res) :-
     program(bytecode_interpreter, Code),
     do_trace(bytecode_loop, Code, Env, Res).
 
-all :-
-    write('power should all give 1024 '), nl,
-    write('interp: '),
-    power(2, 10),
-    write('trace: '),
-    power_trace(2, 10),
-    write('PE: '),
-    power_pe(2, 10),
-    nl,nl,
-    write('loop should all give -5 '), nl,
-    write('interp: '),
-    loop(100),
-    write('trace: '),
-    traceloop(100),
-    nl,nl,
-    write('interp should all give 256 '), nl,
-    write('interp: '),
-    run_interp(16),
-    write('trace: '),
-    trace_interp(16),
-    write('metatrace: '),
-    metatrace_interp(16),
-    write('PE: '),
-    pe_interp(16).
 
 :- begin_tests(mintrace).
 
