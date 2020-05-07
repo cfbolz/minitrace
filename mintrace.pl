@@ -315,7 +315,6 @@ trace(if_class(Arg, Cls, L1, L2), Labels, Env, Heap, guard_class(Arg, Cls, OL, T
 trace_jump(L, Labels, Env, Heap, loop, traceanchor(L, FullTrace), Res) :-
     !, % prevent more tracing
     write(trace), nl, write_trace(FullTrace), nl, % --
-    trace,
     check_syntax_trace(FullTrace, Labels),
     do_optimize(FullTrace, Labels, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
@@ -352,6 +351,36 @@ runtrace_opt(guard(Arg, C, SSAEnv, L, Rest), Labels, Env, Heap, TraceFromStart, 
     (Val == C ->
         runtrace_opt(Rest, Labels, Env, Heap, TraceFromStart, Res)
     ;
+        trace,
+        execute_phi(SSAEnv, Env, InterpEnv),
+        interp_label(L, Labels, InterpEnv, Heap, Res)
+    ).
+
+runtrace_opt(new(ResultVar, Class, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+    new_object(Class, Heap, NHeap, NewObj),
+    write_env(Env, ResultVar, NewObj, NEnv),
+    runtrace_opt(Rest, Labels, NEnv, NHeap, TraceFromStart, Res).
+
+runtrace_opt(get(ResultVar, Arg, Field, Rest),  Labels, Env, Heap, TraceFromStart, Res) :-
+    resolve(Arg, Env, RArg),
+    get_object(RArg, Heap, Obj),
+    get_field(Obj, Field, Value),
+    write_env(Env, ResultVar, Value, NEnv),
+    runtrace_opt(Rest, Labels, NEnv, Heap, TraceFromStart, Res).
+
+runtrace_opt(set(Arg, Field, ValueArg, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+    resolve(Arg, Env, Address),
+    resolve(ValueArg, Env, Value),
+    set_field(Address, Field, Value, Heap, NHeap),
+    runtrace_opt(Rest, Labels, Env, NHeap, TraceFromStart, Res).
+
+runtrace_opt(guard_class(Arg, Class, SSAEnv, L, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+    resolve(Arg, Env, Val),
+    get_object(Val, Heap, obj(Class1, _)),
+    (Class == Class1 ->
+        runtrace_opt(Rest, Labels, Env, Heap, TraceFromStart, Res)
+    ;
+        trace,
         execute_phi(SSAEnv, Env, InterpEnv),
         interp_label(L, Labels, InterpEnv, Heap, Res)
     ).
@@ -411,7 +440,6 @@ optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, AbsHeap, DefinedVars, NewT
     optimize(Rest, NEnv, AbsHeap, DefinedVars, RestTrace).
 
 optimize(loop, SSAEnv, AbsHeap, DefinedVars, Trace) :-
-    trace,
     phis_and_escapes(DefinedVars, SSAEnv, AbsHeap, PhiNodes, Trace, loop(PhiNodes)).
 
 phis_and_escapes([], _, _, [], Trace, Trace).
@@ -483,6 +511,7 @@ optimize(guard_class(Arg, Class, L, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrac
     ensure(RArg = var(Address)),
     maybe_get_object(Address, AbsHeap, Obj),
     (Obj = obj(Class1, _), Class = Class1 ->
+        NHeap = AbsHeap,
         NewTrace = RestTrace
     ;
         escape(RArg, AbsHeap, NHeap, NewTrace, NewTrace2),
@@ -495,7 +524,6 @@ escape(const(_), Heap, Heap, Trace, Trace) :- !.
 escape(var(X), AbsHeap, NHeap, Trace, NewTrace) :-
     maybe_get_object(X, AbsHeap, Obj),
     (Obj = obj(Cls, Fields) ->
-        trace,
         Trace = new(X, Cls, Trace2),
         remove_from_env(X, AbsHeap, AbsHeap1),
         escape_fields(Fields, X, AbsHeap1, NHeap, Trace2, NewTrace)
@@ -598,7 +626,7 @@ program(boxedloop, [
 
 run_boxedloop(X, Res) :-
     program(boxedloop, Code),
-    interp_label(l, Code, [startval/X, xval/3], Res).
+    interp_label(start, Code, [startval/X, xval/3], Res).
 
 trace_boxedloop(X, Res) :-
     program(boxedloop, Code),
@@ -838,14 +866,14 @@ test(escape_virtual_no_fields) :-
 
 test(escape_virtual_1_field) :-
     escape(var(x), [x/obj(type, [f/const(1)]), y/obj(type2, [])], NH, Trace, loop),
-    Trace = new(x, type, 
+    Trace = new(x, type,
             set(var(x), f, const(1),
             loop)),
     NH = [y/obj(type2, [])].
 
 test(escape_virtual_virtual) :-
     escape(var(x), [x/obj(type, [f/var(y)]), y/obj(type2, [g/const(1)])], NH, Trace, loop),
-    Trace = new(x, type, 
+    Trace = new(x, type,
             new(y, type2,
             set(var(y), g, const(1),
             set(var(x), f, var(y),
@@ -854,7 +882,7 @@ test(escape_virtual_virtual) :-
 
 test(escape_virtual_virtual_recursive) :-
     escape(var(x), [x/obj(type, [f/var(y)]), y/obj(type2, [g/var(x)])], NH, Trace, loop),
-    Trace = new(x, type, 
+    Trace = new(x, type,
             new(y, type2,
             set(var(y), g, var(x),
             set(var(x), f, var(y),
@@ -878,25 +906,24 @@ test(trace_newsetguardget, true(Res = 5)) :-
     do_trace(start, Labels, [], Res).
 
 test(optimize_newsetguardget) :-
-    Trace = 
+    Trace =
         new(x, int,
         set(var(x), value, var(i),
         get(i, var(x), value,
         loop))),
-    trace,
     optimize(Trace, [i/var(i)], [], [i], NewTrace).
 
 
 test(trace_boxedloop, true(Res = -5)) :-
     trace_boxedloop(100, Res).
 
-%test(trace_power, true(Res = 1024)) :-
-%     trace_power(2, 10, Res).
+test(trace_power, true(Res = 1024)) :-
+     trace_power(2, 10, Res).
 %
 %test(trace_interp, true(Res = 256)) :-
 %    trace_interp(16, Res).
 %
-%test(metatrace_interp, true(Res = 256)) :-
-%    metatrace_interp(16, Res).
+test(metatrace_interp, true(Res = 256)) :-
+    metatrace_interp(16, Res).
 
 :- end_tests(mintrace).
