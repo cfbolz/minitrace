@@ -52,13 +52,6 @@ write_env([], X, V, [X/V]).
 write_env([Name/_ | Rest], Name, Value, [Name/Value | Rest]) :- !.
 write_env([Pair | Rest], Name, Value, [Pair | NewRest]) :- write_env(Rest, Name, Value, NewRest).
 
-% remove_env(Env, Var, NEnv) remove the binding of variable Var from an
-% environment Env and return a new environment NEnv.
-:- det(remove_env/3).
-remove_env([], _, []).
-remove_env([Name/_ | Rest], Name, Rest) :- !.
-remove_env([Pair | Rest], Name, [Pair | NewRest]) :- remove_env(Rest, Name, NewRest).
-
 % resolve(Arg, Env, Val) turn an argument Arg (which can be either a variable
 % or a constant) into a value Val, either by just unwrapping a constant or by
 % doing a lookup in the environment.
@@ -91,25 +84,35 @@ check_syntax_interp(Labels) :-
     check_syntax_interp(Labels, Labels).
 :- det(check_syntax_interp/2).
 check_syntax_interp([], _).
-check_syntax_interp([_/Op | Rest], AllLabels) :-
+check_syntax_interp([Name/Op | Rest], AllLabels) :-
+    atom(Name),
     check_syntax_interp_op(Op, AllLabels),
     check_syntax_interp(Rest, AllLabels).
 
 :- det(check_syntax_interp_op/2).
-check_syntax_interp_op(op(_, _, _, _, Rest), Labels) :-
+check_syntax_interp_op(op(Res, Op, Arg1, Arg2, Rest), Labels) :-
+    atom(Res), member(Op, [mul, add, sub, ge, eq, assign, readlist]),
+    check_syntax_interp_arg(Arg1),
+    check_syntax_interp_arg(Arg2),
     check_syntax_interp_op(Rest, Labels).
 
-check_syntax_interp_op(promote(_, L1), Labels) :-
+check_syntax_interp_op(promote(Arg, L1), Labels) :-
+    check_syntax_interp_arg(Arg),
     check_label_exists(L1, Labels).
 
-check_syntax_interp_op(if(_, L1, L2), Labels) :-
+check_syntax_interp_op(if(Arg, L1, L2), Labels) :-
+    check_syntax_interp_arg(Arg),
     check_label_exists(L1, Labels),
     check_label_exists(L2, Labels).
 
 check_syntax_interp_op(jump(L), Labels) :-
     check_label_exists(L, Labels).
 
-check_syntax_interp_op(return(_), _).
+check_syntax_interp_op(return(Arg), _) :-
+    check_syntax_interp_arg(Arg).
+
+check_syntax_interp_arg(var(Name)) :- atom(Name).
+check_syntax_interp_arg(const(_)).
 
 check_label_exists(L, Labels) :-
     lookup(L, Labels, _).
