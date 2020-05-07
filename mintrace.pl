@@ -346,14 +346,13 @@ runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Env, Heap, TraceFromSt
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
     runtrace_opt(Rest, Labels, NEnv, Heap, TraceFromStart, Res).
 
-runtrace_opt(guard(Arg, C, SSAEnv, L, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(guard(Arg, C, SSAEnv, AbsHeap, L, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
     resolve(Arg, Env, Val),
     (Val == C ->
         runtrace_opt(Rest, Labels, Env, Heap, TraceFromStart, Res)
     ;
-        trace,
-        execute_phi(SSAEnv, Env, InterpEnv),
-        interp_label(L, Labels, InterpEnv, Heap, Res)
+        execute_fallback(SSAEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
+        interp_label(L, Labels, InterpEnv, InterpHeap, Res)
     ).
 
 runtrace_opt(new(ResultVar, Class, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
@@ -374,20 +373,41 @@ runtrace_opt(set(Arg, Field, ValueArg, Rest), Labels, Env, Heap, TraceFromStart,
     set_field(Address, Field, Value, Heap, NHeap),
     runtrace_opt(Rest, Labels, Env, NHeap, TraceFromStart, Res).
 
-runtrace_opt(guard_class(Arg, Class, SSAEnv, L, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(guard_class(Arg, Class, SSAEnv, AbsHeap, L, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
     resolve(Arg, Env, Val),
     get_object(Val, Heap, obj(Class1, _)),
     (Class == Class1 ->
         runtrace_opt(Rest, Labels, Env, Heap, TraceFromStart, Res)
     ;
-        trace,
-        execute_phi(SSAEnv, Env, InterpEnv),
-        interp_label(L, Labels, InterpEnv, Heap, Res)
+        execute_fallback(SSAEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
+        interp_label(L, Labels, InterpEnv, InterpHeap, Res)
     ).
 
 runtrace_opt(loop(Renames), Labels, Env, Heap, TraceFromStart, Res) :-
     execute_phi(Renames, Env, NewEnv),
     runtrace_opt(TraceFromStart, Labels, NewEnv, Heap, TraceFromStart, Res).
+
+execute_fallback([], _, _, [], H, H).
+execute_fallback([Var/Val | T], Env, AbsHeap, [Var/NVal | T1], Heap, NHeap) :-
+    execute_escape(Val, Env, NEnv, AbsHeap, NAbsHeap, Heap, Heap2, NVal),
+    execute_fallback(T, NEnv, NAbsHeap, T1, Heap2, NHeap).
+
+execute_escape(const(C), Env, Env, AbsHeap, AbsHeap, Heap, Heap, C).
+execute_escape(var(Var), Env, Env, AbsHeap, AbsHeap, Heap, Heap, Val) :-
+    maybe_get_object(Var, AbsHeap, not_virtual), !, lookup(Var, Env, Val).
+execute_escape(var(Var), Env, NEnv, AbsHeap, NAbsHeap, Heap, NHeap, NewObj) :-
+    maybe_get_object(Var, AbsHeap, obj(Cls, Fields)),
+    new_object(Cls, Heap, Heap1, NewObj),
+    write_env(Env, Var, NewObj, Env1),
+    remove_from_env(Var, AbsHeap, AbsHeap1),
+    execute_escape_fields(Fields, NewObj, Env1, NEnv, AbsHeap1, NAbsHeap, Heap1, NHeap).
+
+execute_escape_fields([], _, Env, Env, AbsHeap, AbsHeap, Heap, Heap).
+execute_escape_fields([Field/Value|Rest], Obj, Env, NEnv, AbsHeap, NAbsHeap, Heap, NHeap) :-
+    execute_escape(Value, Env, Env1, AbsHeap, AbsHeap1, Heap, Heap1, Val),
+    set_field(Obj, Field, Val, Heap1, Heap2),
+    execute_escape_fields(Rest, Obj, Env1, NEnv, AbsHeap1, NAbsHeap, Heap2, NHeap).
+
 
 execute_phi([], _, []).
 execute_phi([Var/Val | T], Env, [Var/NVal | T1]) :-
@@ -460,7 +480,7 @@ optimize(guard(Arg, C, L, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
         Val = var(SSAVar),
         write_env(SSAEnv, OrigVar, const(C), NEnv),
         generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
-        NewTrace = guard(Val, C, PhiNodes, L, RestTrace)
+        NewTrace = guard(Val, C, PhiNodes, AbsHeap, L, RestTrace)
     ),
     optimize(Rest, NEnv, AbsHeap, DefinedVars, RestTrace).
 
@@ -472,7 +492,7 @@ optimize(new(Var, Class, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
     optimize(Rest, NEnv, NHeap, DefinedVars, NewTrace).
 
 maybe_get_object(_, [], not_virtual).
-maybe_get_object(Address, [Address/Value | _], Value) :- !.
+maybe_get_object(Address, [Address/Value | _], Res) :- !, Res = Value.
 maybe_get_object(Address, [_ | Rest], Value) :- maybe_get_object(Address, Rest, Value).
 
 optimize(get(Var, Arg, Field, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
@@ -516,7 +536,7 @@ optimize(guard_class(Arg, Class, L, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrac
     ;
         escape(RArg, AbsHeap, NHeap, NewTrace, NewTrace2),
         generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
-        NewTrace2 = guard_class(RArg, Class, PhiNodes, L, RestTrace)
+        NewTrace2 = guard_class(RArg, Class, PhiNodes, AbsHeap, L, RestTrace)
     ),
     optimize(Rest, SSAEnv, NHeap, DefinedVars, RestTrace).
 
@@ -576,6 +596,36 @@ program(loop, [
         op(x3, add, var(x2), const(1),
         op(i, sub, var(i), var(x3),
         jump(l))))]).
+
+% do
+%    i -= 1
+% while i >= 0
+%
+program(bugboxedloop, [
+    start/
+        new(i, int,
+        set(var(i), value, var(startval),
+        jump(l))),
+    l/
+        get(ival, var(i), value,
+        op(nival, sub, var(ival), const(1),
+        new(i, int,
+        set(var(i), value, var(nival),
+        if_class(var(i), int, check, error))))),
+    check/
+        get(ival, var(i), value,
+        op(c, ge, var(ival), const(0),
+        if(var(c), l, l_done))),
+    l_done/
+        get(ival, var(i), value,
+        return(var(ival))),
+    error/
+        return(const(-1000))
+]).
+
+trace_bugboxedloop(X, Res) :-
+    program(bugboxedloop, Code),
+    do_trace(l, Code, [i/int1],  [int1/obj(int, [value/X])], Res).
 
 % arithmetic example
 % while i >= 0
@@ -913,6 +963,8 @@ test(optimize_newsetguardget) :-
         loop))),
     optimize(Trace, [i/var(i)], [], [i], NewTrace).
 
+test(trace_bugboxedloop) :-
+    trace_bugboxedloop(100, _).
 
 test(trace_boxedloop, true(Res = -5)) :-
     trace_boxedloop(100, Res).
