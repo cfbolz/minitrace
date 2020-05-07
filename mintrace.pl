@@ -492,6 +492,28 @@ trace_interp(A, Res) :-
     do_trace(bytecode_loop, Code, Env, Res).
 
 
+compare_traces(loop(X), O) :-
+    !,
+    (O = loop(X) ->
+        true
+    ;
+        throw(difference(loop(X), O))
+    ).
+compare_traces(T1, T2) :-
+    T1 =.. L1,
+    append(LN1, [NextOp1], L1),
+    SOp1 =.. LN1,
+    T2 =.. L2,
+    append(LN2, [NextOp2], L2),
+    SOp2 =.. LN2,
+    (SOp1 = SOp2 ->
+        true
+    ;
+        throw(difference(SOp1, SOp2))
+    ),
+    compare_traces(NextOp1, NextOp2).
+
+
 :- begin_tests(mintrace).
 
 test(check_power) :-
@@ -523,7 +545,6 @@ test(optimize) :-
             op(i, sub, var(i), var(x3),
             op(c, ge, var(i), const(0),
             guard(var(c), 1, l_done, loop)))))),
-    trace,
     optimize(Trace, [i/var(i), x/var(x), x2/var(x2), x3/var(x3), c/var(c)], [i, x, x2, x3, c], Res),
     Res =   guard(var(x), 3, [i/var(i), x/var(x), x2/var(x2), x3/var(x3), c/var(c)], b2,
             op(I1, sub, var(i), const(7),
@@ -537,9 +558,10 @@ test(optimize_guard_bug) :-
             op(pc, add, var(pc), const(1),
             loop))),
     optimize(Trace, [source/var(source), pc/var(pc)], [source, pc], Res),
-    Res =   op(PC1, add, var(source), const(0),
+    Res1 =   op(PC1, add, var(source), const(0),
             guard(var(PC1), 1, [source/var(source), pc/var(PC1)], l_done,
-            loop([sourve/var(source), pc/const(2)]))).
+            loop([source/var(source), pc/const(2)]))),
+    compare_traces(Res, Res1).
 
 
 test(execute_phi, true(Res = [i/ -1, x/3, x2/6, x3/7, c/0])) :-
@@ -555,7 +577,6 @@ test(trace_interp, true(Res = 256)) :-
     trace_interp(16, Res).
 
 test(metatrace_interp, true(Res = 256)) :-
-    trace,
     metatrace_interp(16, Res).
 
 :- end_tests(mintrace).
