@@ -709,7 +709,7 @@ bugboxedloop/func([i], loop, [
 % while i >= 0
 %    i -= x * 2 + 1
 
-boxedloop/func([i, x], loop, [
+boxedloop/func([startval, xval], loop, [
     start/
         new(i, int,
         set(var(i), value, var(startval),
@@ -820,12 +820,13 @@ run_callplus1(X, Res) :-
     functions(Functions),
     interp_function(callplus1, Functions, [X], Res).
 
+run_boxedloop(X, Res) :-
+    functions(Functions),
+    interp_function(boxedloop, Functions, [X, 3], Res).
+
 %trace_bugboxedloop(X, Res) :-
 %    function(Functions),(bugboxedloop, Code),
 %    do_trace(l, Code, [i/int1],  [int1/obj(int, [value/X])], Res).
-%run_boxedloop(X, Res) :-
-%    program(boxedloop, Code),
-%    interp_label(start, Code, [startval/X, xval/3], Res).
 
 %trace_boxedloop(X, Res) :-
 %    program(boxedloop, Code),
@@ -1015,9 +1016,9 @@ test(check_functions) :-
 %
 test(call, true(Res = 13)) :-
     run_callplus1(6, Res).
-%
-%test(boxedloop) :-
-%    run_boxedloop(100, Res).
+
+test(boxedloop) :-
+    run_boxedloop(100, Res).
 
 %test(optimize) :-
 %    Trace = guard(var(x), 3, b2,
