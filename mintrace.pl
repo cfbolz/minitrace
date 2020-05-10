@@ -52,6 +52,11 @@ write_env([], X, V, [X/V]).
 write_env([Name/_ | Rest], Name, Value, [Name/Value | Rest]) :- !.
 write_env([Pair | Rest], Name, Value, [Pair | NewRest]) :- write_env(Rest, Name, Value, NewRest).
 
+remove_from_env(_, [], []).
+remove_from_env(X, [X/_ | T], T) :- !.
+remove_from_env(X, [A/B | T1], [A/B | T2]) :-
+    remove_from_env(X, T1, T2).
+
 % resolve(Arg, Env, Val) turn an argument Arg (which can be either a variable
 % or a constant) into a value Val, either by just unwrapping a constant or by
 % doing a lookup in the environment.
@@ -550,11 +555,6 @@ escape(var(X), AbsHeap, NHeap, Trace, NewTrace) :-
     ;
         NHeap = AbsHeap, Trace = NewTrace
     ).
-
-remove_from_env(_, [], []).
-remove_from_env(X, [X/_ | T], T) :- !.
-remove_from_env(X, [A/B | T1], [A/B | T2]) :-
-    remove_from_env(X, T1, T2).
 
 escape_fields([], _, AbsHeap, AbsHeap, Trace, Trace).
 escape_fields([FieldName/Value | RestFields], X, AbsHeap, NHeap, Trace, NewTrace) :-
