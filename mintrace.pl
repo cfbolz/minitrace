@@ -123,6 +123,16 @@ check_syntax_interp_op(if_class(Arg, Shape, L1, L2), Labels) :-
     check_label_exists(L1, Labels),
     check_label_exists(L2, Labels).
 
+check_syntax_interp_op(getglobal(Res, Name, Rest), Labels) :-
+    atom(Res),
+    atom(Name),
+    check_syntax_interp_op(Rest, Labels).
+
+check_syntax_interp_op(setglobal(Name, Arg, Rest), Labels) :-
+    atom(Name),
+    check_syntax_interp_arg(Arg),
+    check_syntax_interp_op(Rest, Labels).
+
 check_syntax_interp_op(promote(Arg, L1), Labels) :-
     check_syntax_interp_arg(Arg),
     check_label_exists(L1, Labels).
@@ -682,6 +692,25 @@ trace_boxedloop(X, Res) :-
     program(boxedloop, Code),
     do_trace(l, Code, [startval/X, xval/3, i/i, x/x],  [i/obj(int, [value/X]), x/obj(int, [value/3])], Res).
 
+% global example
+% while i >= 0
+%    i -= global_x * 2 + 1
+
+program(globalloop, [
+    l/
+        op(c, ge, var(i), const(0),
+        if(var(c), b, l_done)),
+    l_done/
+        return(var(i)),
+    b/
+        getglobal(x, global_x,
+        op(x2, mul, var(x), const(2),
+        op(x3, add, var(x2), const(1),
+        op(i, sub, var(i), var(x3),
+        jump(l)))))
+]).
+
+
 % bytecode interpreter
 
 program(bytecode_interpreter, [
@@ -939,8 +968,8 @@ test(escape_virtual_virtual_recursive) :-
             loop)))),
     NH = [].
 
-%test(trace_loop, true(Res = -5)) :-
-%    trace_loop(100, Res).
+test(trace_loop, true(Res = -5)) :-
+    trace_loop(100, Res).
 
 test(trace_newsetguardget, true(Res = 5)) :-
     Labels = [
