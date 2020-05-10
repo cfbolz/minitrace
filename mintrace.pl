@@ -338,6 +338,8 @@ check_syntax_trace(loop, _).
 % trace(Code, Labels, Env, Trace, TraceAnchor) trace the code Code in environment Env
 % yielding trace Trace. The TraceAnchor contains information about where to end
 % tracing and the full trace.
+:- det(trace/9).
+
 trace(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Functions, Env, Heap,
       op(ResultVar, Op, Arg1, Arg2, T), TraceAnchor, Stack, Res) :-
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
@@ -347,10 +349,16 @@ trace(promote(Arg, L), Labels, Functions, Env, Heap, guard(Arg, Val, L, T), Trac
     resolve(Arg, Env, Val),
     trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(return(V), _, Env, _,
-      return(V), _, Val) :-
-    resolve(V, Env, Val),
+trace(return(Arg), Labels, Functions, Env, Heap, return(Arg, ResultVar, T), TraceAnchor, Stack, Res) :-
+    resolve(Arg, Env, Val),
+    trace_return(Stack, Val, ResultVar, Functions, Heap, T, TraceAnchor, Res).
+
+trace_return([], Val, _, _, _, _, _, _, _, Val) :-
     print(Val), nl.
+
+trace_return([frame(L, Labels, Env, ResultVar)|Stack], Val, ResultVar, Functions, Heap, T, TraceAnchor, Res) :-
+    write_env(Env, ResultVar, Val, NEnv),
+    trace_jump(L, Labels, Functions, NEnv, Heap, T, TraceAnchor, Stack, Res).
 
 trace(jump(L), Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res) :-
     trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
@@ -393,6 +401,24 @@ trace(if_class(Arg, Cls, L1, L2), Labels, Functions, Env, Heap, guard_class(Arg,
     ),
     trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
+trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, call(ResultVar, FuncName, Args, T), TraceAnchor, Stack, Res) :-
+    lookup(FuncName, Functions, Func), Func = func(ArgNames, loop, SubLabels), !,
+    trace,
+    xxx,
+    resolve_args(Args, Env, RArgs),
+    create_start_env(ArgNames, RArgs, StartEnv),
+    NStack = [frame(L, Labels, Env, ResultVar) | Stack],
+    [Label/_ | _] = SubLabels,
+    trace_jump(L, SubLabels, Functions, StartEnv, Heap, T, TraceAnchor, NStack, Res).
+
+trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, enter(Mapping, T), TraceAnchor, Stack, Res) :-
+    lookup(FuncName, Functions, func(ArgNames, noloop, SubLabels)), !,
+    resolve_args(Args, Env, RArgs),
+    create_start_env(ArgNames, RArgs, StartEnv),
+    create_start_env(ArgNames, Args, Mapping),
+    NStack = [frame(L, Labels, Env, ResultVar) | Stack],
+    [Label/_ | _] = SubLabels,
+    trace_jump(Label, SubLabels, Functions, StartEnv, Heap, T, TraceAnchor, NStack, Res).
 
 trace_jump(L, Labels, Functions, Env, Heap, loop, traceanchor(L, FullTrace), Stack, Res) :-
     !, % prevent more tracing
@@ -468,6 +494,7 @@ runtrace_opt(guard_class(Arg, Class, SSAEnv, AbsHeap, L, Rest), Labels, Function
 runtrace_opt(loop(Renames), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     execute_phi(Renames, Env, NewEnv),
     runtrace_opt(TraceFromStart, Labels, Functions, NewEnv, Heap, TraceFromStart, Stack, Res).
+
 
 execute_fallback([], _, _, [], H, H).
 execute_fallback([Var/Val | T], Env, AbsHeap, [Var/NVal | T1], Heap, NHeap) :-
@@ -829,9 +856,15 @@ run_boxedloop(X, Res) :-
 %    function(Functions),(bugboxedloop, Code),
 %    do_trace(l, Code, [i/int1],  [int1/obj(int, [value/X])], Res).
 
-%trace_boxedloop(X, Res) :-
-%    program(boxedloop, Code),
-%    do_trace(l, Code, [startval/X, xval/3, i/i, x/x],  [i/obj(int, [value/X]), x/obj(int, [value/3])], Res).
+trace_boxedloop(X, Res) :-
+    functions(Functions),
+    lookup(boxedloop, Functions, func(_, _, Labels)),
+    do_trace(l, Labels, Functions,
+             [startval/X, xval/3, i/i, x/x, const0/const0, const1/const1, const2/const2],
+             [i/obj(int, [value/X]), x/obj(int, [value/3]),
+                const0/obj(int, [value/0]), const1/obj(int, [value/1]), const2/obj(int, [value/2])],
+             [],
+             Res).
 
 % bytecode interpreter
 
@@ -1113,8 +1146,8 @@ test(boxedloop) :-
 %test(trace_bugboxedloop) :-
 %    trace_bugboxedloop(100, _).
 %
-%test(trace_boxedloop, true(Res = -5)) :-
-%    trace_boxedloop(100, Res).
+test(trace_boxedloop, true(Res = -5)) :-
+    trace_boxedloop(100, Res).
 %
 test(trace_power, true(Res = 1024)) :-
      trace_power(2, 10, Res).
