@@ -312,11 +312,12 @@ set_field(Address, Field, Value, Heap, NHeap) :-
 % _______________ simple tracer _______________
 
 % do_trace(Label, Env) start tracing of code at label Label with environment Env
-do_trace(L, Labels, Env, Res) :-
-    do_trace(L, Labels, Env, [], Res).
-do_trace(L, Labels, Env, Heap, Res) :-
+do_trace(FuncName, L, Functions, Env, Res) :-
+    lookup(FuncName, Functions, func(_, _, Labels)),
+    do_trace(L, Labels, Functions, Env, [], [], Res).
+do_trace(L, Labels, Functions, Env, Heap, Stack, Res) :-
     lookup(L, Labels, StartCode),
-    trace(StartCode, Labels, Env, Heap, ProducedTrace, traceanchor(L, ProducedTrace), Res).
+    trace(StartCode, Labels, Functions, Env, Heap, ProducedTrace, traceanchor(L, ProducedTrace), Stack, Res).
 
 check_syntax_trace(op(_, _, _, _, T), Labels) :-
     check_syntax_trace(T, Labels).
@@ -337,24 +338,24 @@ check_syntax_trace(loop, _).
 % trace(Code, Labels, Env, Trace, TraceAnchor) trace the code Code in environment Env
 % yielding trace Trace. The TraceAnchor contains information about where to end
 % tracing and the full trace.
-trace(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Env, Heap,
-      op(ResultVar, Op, Arg1, Arg2, T), TraceAnchor, Res) :-
+trace(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Functions, Env, Heap,
+      op(ResultVar, Op, Arg1, Arg2, T), TraceAnchor, Stack, Res) :-
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
-    trace(Rest, Labels, NEnv, Heap, T, TraceAnchor, Res).
+    trace(Rest, Labels, Functions, NEnv, Heap, T, TraceAnchor, Stack, Res).
 
-trace(promote(Arg, L), Labels, Env, Heap, guard(Arg, Val, L, T), TraceAnchor, Res) :-
+trace(promote(Arg, L), Labels, Functions, Env, Heap, guard(Arg, Val, L, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Val),
-    trace_jump(L, Labels, Env, Heap, T, TraceAnchor, Res).
+    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
 trace(return(V), _, Env, _,
       return(V), _, Val) :-
     resolve(V, Env, Val),
     print(Val), nl.
 
-trace(jump(L), Labels, Env, Heap, T, TraceAnchor, Res) :-
-    trace_jump(L, Labels, Env, Heap, T, TraceAnchor, Res).
+trace(jump(L), Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res) :-
+    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(if(Arg, L1, L2), Labels, Env, Heap, guard(Arg, Val, OL, T), TraceAnchor, Res) :-
+trace(if(Arg, L1, L2), Labels, Functions, Env, Heap, guard(Arg, Val, OL, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Val),
     (Val == 0 ->
         L = L2, OL = L1
@@ -362,27 +363,27 @@ trace(if(Arg, L1, L2), Labels, Env, Heap, guard(Arg, Val, OL, T), TraceAnchor, R
         ensure(Val == 1),
         L = L1, OL = L2
     ),
-    trace_jump(L, Labels, Env, Heap, T, TraceAnchor, Res).
+    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(new(ResultVar, Class, NextOp), Labels, Env, Heap, new(ResultVar, Class, T), TraceAnchor, Res) :-
+trace(new(ResultVar, Class, NextOp), Labels, Functions, Env, Heap, new(ResultVar, Class, T), TraceAnchor, Stack, Res) :-
     new_object(Class, Heap, NHeap, NewObj),
     write_env(Env, ResultVar, NewObj, NEnv),
-    trace(NextOp, Labels, NEnv, NHeap, T, TraceAnchor, Res).
+    trace(NextOp, Labels, Functions, NEnv, NHeap, T, TraceAnchor, Stack, Res).
 
-trace(get(ResultVar, Arg, Field, NextOp), Labels, Env, Heap, get(ResultVar, Arg, Field, T), TraceAnchor, Res) :-
+trace(get(ResultVar, Arg, Field, NextOp), Labels, Functions, Env, Heap, get(ResultVar, Arg, Field, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, Obj),
     get_field(Obj, Field, Value),
     write_env(Env, ResultVar, Value, NEnv),
-    trace(NextOp, Labels, NEnv, Heap, T, TraceAnchor, Res).
+    trace(NextOp, Labels, Functions, NEnv, Heap, T, TraceAnchor, Stack, Res).
 
-trace(set(Arg, Field, ValueArg, NextOp), Labels, Env, Heap, set(Arg, Field, ValueArg, T), TraceAnchor, Res) :-
+trace(set(Arg, Field, ValueArg, NextOp), Labels, Functions, Env, Heap, set(Arg, Field, ValueArg, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Address),
     resolve(ValueArg, Env, Value),
     set_field(Address, Field, Value, Heap, NHeap),
-    trace(NextOp, Labels, Env, NHeap, T, TraceAnchor, Res).
+    trace(NextOp, Labels, Functions, Env, NHeap, T, TraceAnchor, Stack, Res).
 
-trace(if_class(Arg, Cls, L1, L2), Labels, Env, Heap, guard_class(Arg, Cls, OL, T), TraceAnchor, Res) :-
+trace(if_class(Arg, Cls, L1, L2), Labels, Functions, Env, Heap, guard_class(Arg, Cls, OL, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, obj(Cls1, _)),
     (Cls == Cls1 ->
@@ -390,20 +391,20 @@ trace(if_class(Arg, Cls, L1, L2), Labels, Env, Heap, guard_class(Arg, Cls, OL, T
     ;
         L = L2, OL = L1
     ),
-    trace_jump(L, Labels, Env, Heap, T, TraceAnchor, Res).
+    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
 
-trace_jump(L, Labels, Env, Heap, loop, traceanchor(L, FullTrace), Res) :-
+trace_jump(L, Labels, Functions, Env, Heap, loop, traceanchor(L, FullTrace), Stack, Res) :-
     !, % prevent more tracing
     write(trace), nl, write_trace(FullTrace), nl, % --
     check_syntax_trace(FullTrace, Labels),
-    do_optimize(FullTrace, Labels, Env, OptTrace),
+    do_optimize(FullTrace, Labels, Functions, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
-    runtrace_opt(OptTrace, Labels, Env, Heap, OptTrace, Res).
+    runtrace_opt(OptTrace, Labels, Functions, Env, Heap, OptTrace, Stack, Res).
 
-trace_jump(L, Labels, Env, Heap, T, TraceAnchor, Res) :-
+trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res) :-
     lookup(L, Labels, Code),
-    trace(Code, Labels, Env, Heap, T, TraceAnchor, Res).
+    trace(Code, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
 
 % write_trace(Trace) print trace Trace in a readable way
@@ -421,52 +422,52 @@ write_trace(Op) :-
 % _______________ run traces _______________
 
 
-% runtrace_opt(Trace, Labels, Env, Heap, TraceFromStart) execute a trace Trace in environment Env
+% runtrace_opt(Trace, Labels, Functions, Env, Heap, TraceFromStart) execute a trace Trace in environment Env
 % with the full trace being also given as argument TraceFromStart
-runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
-    runtrace_opt(Rest, Labels, NEnv, Heap, TraceFromStart, Res).
+    runtrace_opt(Rest, Labels, Functions, NEnv, Heap, TraceFromStart, Stack, Res).
 
-runtrace_opt(guard(Arg, C, SSAEnv, AbsHeap, L, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(guard(Arg, C, SSAEnv, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Val),
     (Val == C ->
-        runtrace_opt(Rest, Labels, Env, Heap, TraceFromStart, Res)
+        runtrace_opt(Rest, Labels, Functions, Env, Heap, TraceFromStart, Stack, Res)
     ;
         execute_fallback(SSAEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
-        interp_label(L, Labels, InterpEnv, InterpHeap, Res)
+        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, Stack, Res)
     ).
 
-runtrace_opt(new(ResultVar, Class, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(new(ResultVar, Class, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     new_object(Class, Heap, NHeap, NewObj),
     write_env(Env, ResultVar, NewObj, NEnv),
-    runtrace_opt(Rest, Labels, NEnv, NHeap, TraceFromStart, Res).
+    runtrace_opt(Rest, Labels, Functions, NEnv, NHeap, TraceFromStart, Stack, Res).
 
-runtrace_opt(get(ResultVar, Arg, Field, Rest),  Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(get(ResultVar, Arg, Field, Rest),  Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, Obj),
     get_field(Obj, Field, Value),
     write_env(Env, ResultVar, Value, NEnv),
-    runtrace_opt(Rest, Labels, NEnv, Heap, TraceFromStart, Res).
+    runtrace_opt(Rest, Labels, Functions, NEnv, Heap, TraceFromStart, Stack, Res).
 
-runtrace_opt(set(Arg, Field, ValueArg, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(set(Arg, Field, ValueArg, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Address),
     resolve(ValueArg, Env, Value),
     set_field(Address, Field, Value, Heap, NHeap),
-    runtrace_opt(Rest, Labels, Env, NHeap, TraceFromStart, Res).
+    runtrace_opt(Rest, Labels, Functions, Env, NHeap, TraceFromStart, Stack, Res).
 
-runtrace_opt(guard_class(Arg, Class, SSAEnv, AbsHeap, L, Rest), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(guard_class(Arg, Class, SSAEnv, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Val),
     get_object(Val, Heap, obj(Class1, _)),
     (Class == Class1 ->
-        runtrace_opt(Rest, Labels, Env, Heap, TraceFromStart, Res)
+        runtrace_opt(Rest, Labels, Functions, Env, Heap, TraceFromStart, Stack, Res)
     ;
         execute_fallback(SSAEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
-        interp_label(L, Labels, InterpEnv, InterpHeap, Res)
+        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, Stack, Res)
     ).
 
-runtrace_opt(loop(Renames), Labels, Env, Heap, TraceFromStart, Res) :-
+runtrace_opt(loop(Renames), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     execute_phi(Renames, Env, NewEnv),
-    runtrace_opt(TraceFromStart, Labels, NewEnv, Heap, TraceFromStart, Res).
+    runtrace_opt(TraceFromStart, Labels, Functions, NewEnv, Heap, TraceFromStart, Stack, Res).
 
 execute_fallback([], _, _, [], H, H).
 execute_fallback([Var/Val | T], Env, AbsHeap, [Var/NVal | T1], Heap, NHeap) :-
@@ -502,9 +503,9 @@ execute_phi([Var/Val | T], Env, [Var/NVal | T1]) :-
 
 % _______________ optimization _______________
 %
-% do_optimize(Trace, Labels, Env, OptimizedTrace) optimize a trace Trace, returning
+% do_optimize(Trace, Labels, Functions, Env, OptimizedTrace) optimize a trace Trace, returning
 % OptimizedTrace
-do_optimize(Trace, Labels, Env, OptimizedTrace) :-
+do_optimize(Trace, Labels, Functions, Env, OptimizedTrace) :-
     initialize_ssa_env(Env, SSAEnv, DefinedVars),
     optimize(Trace, SSAEnv, [], DefinedVars, OptimizedTrace).
 
@@ -936,8 +937,8 @@ power(X, Y, Res) :-
     interp_function(power, Functions, [X, Y], Res).
 
 trace_power(X, Y, Res) :-
-    program(power, Code),
-    do_trace(power_rec, Code, [x/X, y/Y, res/1], Res).
+    functions(Functions),
+    do_trace(power, power_rec, Functions, [x/X, y/Y, res/1], Res).
 
 power_pe(X, Y) :-
     do_pe(power, [y/Y], Label),
@@ -1115,8 +1116,8 @@ test(boxedloop) :-
 %test(trace_boxedloop, true(Res = -5)) :-
 %    trace_boxedloop(100, Res).
 %
-%test(trace_power, true(Res = 1024)) :-
-%     trace_power(2, 10, Res).
+test(trace_power, true(Res = 1024)) :-
+     trace_power(2, 10, Res).
 %%
 %%test(trace_interp, true(Res = 256)) :-
 %%    trace_interp(16, Res).
