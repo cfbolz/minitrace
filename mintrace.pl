@@ -41,7 +41,7 @@ term_expansion(Head, MangledHead) :-
 % result Res. The environment is a list of Name/Value terms.
 
 :- det(lookup/3).
-lookup(X, [], _) :- throw(key_not_found(X)).
+lookup(X, [], _) :- trace, throw(key_not_found(X)).
 lookup(Name, [Name/Value | _], Value) :- !.
 lookup(Name, [_ | Rest], Value) :- lookup(Name, Rest, Value).
 
@@ -423,9 +423,11 @@ trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, enter(Ma
 trace_jump(L, Labels, Functions, Env, Heap, loop, traceanchor(L, FullTrace), Stack, Res) :-
     !, % prevent more tracing
     write(trace), nl, write_trace(FullTrace), nl, % --
-    check_syntax_trace(FullTrace, Labels),
+    trace,
+    %check_syntax_trace(FullTrace, Labels),
     do_optimize(FullTrace, Labels, Functions, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
+    trace,
     runtrace_opt(OptTrace, Labels, Functions, Env, Heap, OptTrace, Stack, Res).
 
 trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res) :-
@@ -450,6 +452,8 @@ write_trace(Op) :-
 
 % runtrace_opt(Trace, Labels, Functions, Env, Heap, TraceFromStart) execute a trace Trace in environment Env
 % with the full trace being also given as argument TraceFromStart
+
+:- det(runtrace_opt/8).
 runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
     runtrace_opt(Rest, Labels, Functions, NEnv, Heap, TraceFromStart, Stack, Res).
@@ -534,7 +538,7 @@ execute_phi([Var/Val | T], Env, [Var/NVal | T1]) :-
 % OptimizedTrace
 do_optimize(Trace, Labels, Functions, Env, OptimizedTrace) :-
     initialize_ssa_env(Env, SSAEnv, DefinedVars),
-    optimize(Trace, SSAEnv, [], DefinedVars, OptimizedTrace).
+    optimize(Trace, SSAEnv, [], DefinedVars, [], OptimizedTrace).
 
 invent_new_var(Var, NewVar) :- gensym(Var, NewVar).
 
@@ -551,10 +555,10 @@ generate_phi_nodes([Var | Rest], SSAEnv, [Var/Val | Rest2]) :-
     generate_phi_nodes(Rest, SSAEnv, Rest2).
 
 
-% optimize(Trace, SSAEnv, DefinedVars, NewTrace) optimize trace Trace under SSA-environment SSAEnv
+% optimize(Trace, SSAEnv, DefinedVars, Stack, NewTrace) optimize trace Trace under SSA-environment SSAEnv
 
-:- det(optimize/5).
-optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
+:- det(optimize/6).
+optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
     sresolve(Arg1, SSAEnv, RArg1),
     sresolve(Arg2, SSAEnv, RArg2),
     (RArg1 = const(C1), RArg2 = const(C2) ->
@@ -566,9 +570,20 @@ optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, AbsHeap, DefinedVars, NewT
         write_env(SSAEnv, ResultVar, var(Res), NEnv),
         NewTrace = op(Res, Op, RArg1, RArg2, RestTrace)
     ),
-    optimize(Rest, NEnv, AbsHeap, DefinedVars, RestTrace).
+    optimize(Rest, NEnv, AbsHeap, DefinedVars, Stack, RestTrace).
 
-optimize(loop, SSAEnv, AbsHeap, DefinedVars, Trace) :-
+optimize(enter(Renames, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
+    execute_phi(Renames, SSAEnv, NEnv),
+    optimize(Rest, NEnv, AbsHeap, DefinedVars, [SSAEnv | Stack], NewTrace).
+
+optimize(return(Res, ResVar, RestTrace), SSAEnv, AbsHeap, DefinedVars, [TargetSSAEnv | Stack], NewTrace) :-
+    trace,
+    sresolve(Res, SSAEnv, RRes),
+    write_env(TargetSSAEnv, ResVar, RRes, NEnv),
+    optimize(RestTrace, NEnv, AbsHeap, DefinedVars, Stack, NewTrace).
+
+optimize(loop, SSAEnv, AbsHeap, DefinedVars, Stack, Trace) :-
+    ensure(Stack = []),
     phis_and_escapes(DefinedVars, SSAEnv, AbsHeap, PhiNodes, Trace, loop(PhiNodes)).
 
 phis_and_escapes([], _, _, [], Trace, Trace).
@@ -578,7 +593,7 @@ phis_and_escapes([Var | Rest], SSAEnv, AbsHeap, [Var/Val | Rest2], Trace, EndTra
     phis_and_escapes(Rest, SSAEnv, NHeap, Rest2, NewTrace, EndTrace).
 
 
-optimize(guard(Arg, C, L, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
+optimize(guard(Arg, C, L, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
     sresolve(Arg, SSAEnv, Val),
     (Val = const(C1) ->
         ensure(C1 = C), % -- otherwise the loop is invalid
@@ -588,23 +603,23 @@ optimize(guard(Arg, C, L, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
         Arg = var(OrigVar),
         Val = var(SSAVar),
         write_env(SSAEnv, OrigVar, const(C), NEnv),
-        generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
+        %generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
         NewTrace = guard(Val, C, PhiNodes, AbsHeap, L, RestTrace)
     ),
-    optimize(Rest, NEnv, AbsHeap, DefinedVars, RestTrace).
+    optimize(Rest, NEnv, AbsHeap, DefinedVars, Stack, RestTrace).
 
 % abstract heap maps SSAVar -> obj(Cls, Fields)
 % Fields are var(SSAVar) or const(...)
-optimize(new(Var, Class, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
+optimize(new(Var, Class, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
     new_object(Class, AbsHeap, NHeap, NewObj),
     write_env(SSAEnv, Var, var(NewObj), NEnv),
-    optimize(Rest, NEnv, NHeap, DefinedVars, NewTrace).
+    optimize(Rest, NEnv, NHeap, DefinedVars, Stack, NewTrace).
 
 maybe_get_object(_, [], not_virtual).
 maybe_get_object(Address, [Address/Value | _], Res) :- !, Res = Value.
 maybe_get_object(Address, [_ | Rest], Value) :- maybe_get_object(Address, Rest, Value).
 
-optimize(get(Var, Arg, Field, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
+optimize(get(Var, Arg, Field, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
     sresolve(Arg, SSAEnv, RArg),
     ensure(RArg = var(Address)),
     maybe_get_object(Address, AbsHeap, Obj),
@@ -618,9 +633,9 @@ optimize(get(Var, Arg, Field, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
         write_env(SSAEnv, Var, var(Res), NEnv),
         NewTrace = get(Res, RArg, Field, RestTrace)
     ),
-    optimize(Rest, NEnv, AbsHeap, DefinedVars, RestTrace).
+    optimize(Rest, NEnv, AbsHeap, DefinedVars, Stack, RestTrace).
 
-optimize(set(Arg, Field, ValueArg, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
+optimize(set(Arg, Field, ValueArg, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
     sresolve(Arg, SSAEnv, RArg),
     ensure(RArg = var(Address)),
     sresolve(ValueArg, SSAEnv, RValueArg),
@@ -633,9 +648,9 @@ optimize(set(Arg, Field, ValueArg, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace
         escape(RValueArg, AbsHeap, NHeap, NewTrace, NewTrace2),
         NewTrace2 = set(RArg, Field, RValueArg, RestTrace)
     ),
-    optimize(Rest, NEnv, NHeap, DefinedVars, RestTrace).
+    optimize(Rest, NEnv, NHeap, DefinedVars, Stack, RestTrace).
 
-optimize(guard_class(Arg, Class, L, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrace) :-
+optimize(guard_class(Arg, Class, L, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
     sresolve(Arg, SSAEnv, RArg),
     ensure(RArg = var(Address)),
     maybe_get_object(Address, AbsHeap, Obj),
@@ -644,10 +659,10 @@ optimize(guard_class(Arg, Class, L, Rest), SSAEnv, AbsHeap, DefinedVars, NewTrac
         NewTrace = RestTrace
     ;
         escape(RArg, AbsHeap, NHeap, NewTrace, NewTrace2),
-        generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
+        %generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
         NewTrace2 = guard_class(RArg, Class, PhiNodes, AbsHeap, L, RestTrace)
     ),
-    optimize(Rest, SSAEnv, NHeap, DefinedVars, RestTrace).
+    optimize(Rest, SSAEnv, NHeap, DefinedVars, Stack, RestTrace).
 
 escape(const(_), Heap, Heap, Trace, Trace) :- !.
 escape(var(X), AbsHeap, NHeap, Trace, NewTrace) :-
