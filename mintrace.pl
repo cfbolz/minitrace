@@ -41,7 +41,7 @@ term_expansion(Head, MangledHead) :-
 % result Res. The environment is a list of Name/Value terms.
 
 :- det(lookup/3).
-lookup(X, [], _) :- trace, throw(key_not_found(X)).
+lookup(X, [], _) :- throw(key_not_found(X)).
 lookup(Name, [Name/Value | _], Value) :- !.
 lookup(Name, [_ | Rest], Value) :- lookup(Name, Rest, Value).
 
@@ -333,6 +333,11 @@ check_syntax_trace(guard(_, _, L, T), Labels) :-
 check_syntax_trace(guard_class(_, _, L, T), Labels) :-
     lookup(L, Labels, _),
     check_syntax_trace(T, Labels).
+check_syntax_trace(enter(L, Labels, _, _, T), Labels) :-
+    lookup(L, Labels, _),
+    check_syntax_trace(T, Labels).
+check_syntax_trace(return(Arg, T), Labels) :-
+    check_syntax_trace(T, Labels).
 check_syntax_trace(loop, _).
 
 % trace(Code, Labels, Env, Trace, TraceAnchor) trace the code Code in environment Env
@@ -423,11 +428,9 @@ trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, enter(L,
 trace_jump(L, Labels, Functions, Env, Heap, loop, traceanchor(L, FullTrace), Stack, Res) :-
     !, % prevent more tracing
     write(trace), nl, write_trace(FullTrace), nl, % --
-    trace,
     %check_syntax_trace(FullTrace, Labels),
     do_optimize(FullTrace, Labels, Functions, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
-    trace,
     runtrace_opt(OptTrace, Labels, Functions, Env, Heap, OptTrace, Stack, Res).
 
 trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res) :-
@@ -499,9 +502,9 @@ runtrace_opt(loop(Renames), Labels, Functions, Env, Heap, TraceFromStart, Stack,
     execute_phi(Renames, Env, NewEnv),
     runtrace_opt(TraceFromStart, Labels, Functions, NewEnv, Heap, TraceFromStart, Stack, Res).
 
-execute_fallback(resume(ResumeEnv, ResumeStack), Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack) :-
+execute_fallback(resume(ResumeEnv, ResumeStack), Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, Stack) :-
     ensure(ResumeStack = []),
-    write(ResumeEnv), nl, trace,
+    write(ResumeEnv), nl,
     execute_fallback(ResumeEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
     InterpStack = Stack.
     
@@ -576,12 +579,10 @@ optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, AbsHeap, DefinedVars, Stac
     optimize(Rest, NEnv, AbsHeap, DefinedVars, Stack, RestTrace).
 
 optimize(enter(L, Labels, ResultVar, Renames, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
-    trace,
     execute_phi(Renames, SSAEnv, NEnv),
     optimize(Rest, NEnv, AbsHeap, DefinedVars, [frame(L, Labels, SSAEnv, ResultVar) | Stack], NewTrace).
 
 optimize(return(Res, RestTrace), SSAEnv, AbsHeap, DefinedVars, [frame(L, Labels, TargetSSAEnv, ResVar)| Stack], NewTrace) :-
-    trace,
     sresolve(Res, SSAEnv, RRes),
     write_env(TargetSSAEnv, ResVar, RRes, NEnv),
     optimize(RestTrace, NEnv, AbsHeap, DefinedVars, Stack, NewTrace).
@@ -709,7 +710,7 @@ power/func([x, y], loop, [
 % while i >= 0
 %    i -= promote(x) * 2 + 1
 
-loop/func([i], loop, [
+loop/func([i, x], loop, [
     l/
         op(c, ge, var(i), const(0),
         if(var(c), b, l_done)),
@@ -880,49 +881,26 @@ callplus1/func([res], noloop, [
     done/
         op(res, add, var(a), var(res),
         return(var(res)))
-])
-]).
+]),
 
-run_callplus1(X, Res) :-
-    functions(Functions),
-    interp_function(callplus1, Functions, [X], Res).
 
-run_boxedloop(X, Res) :-
-    functions(Functions),
-    interp_function(boxedloop, Functions, [X, 3], Res).
-
-%trace_bugboxedloop(X, Res) :-
-%    function(Functions),(bugboxedloop, Code),
-%    do_trace(l, Code, [i/int1],  [int1/obj(int, [value/X])], Res).
-
-trace_boxedloop(X, Res) :-
-    functions(Functions),
-    lookup(boxedloop, Functions, func(_, _, Labels)),
-    do_trace(l, Labels, Functions,
-             [startval/X, xval/3, i/i, x/x, const0/const0, const1/const1, const2/const2],
-             [i/obj(int, [value/X]), x/obj(int, [value/3]),
-                const0/obj(int, [value/0]), const1/obj(int, [value/1]), const2/obj(int, [value/2])],
-             [],
-             Res).
-
-trace_callloop(I, X, Res) :-
-    functions(Functions),
-    lookup(callloop, Functions, func(_, _, Labels)),
-    do_trace(callloop, l, Functions, [i/I, x/X], Res).
-
-% bytecode interpreter
-
-program(bytecode_interpreter, [
-% dispatch loop
+interp/func([bytecode, a], loop, [
+    setup/
+        op(pc, assign, const(0), const(0),
+        op(r0, assign, const(0), const(0),
+        op(r1, assign, const(0), const(0),
+        op(r2, assign, const(0), const(0),
+        jump(bytecode_loop))))),
+    % dispatch loop
     bytecode_loop/
-      promote(var(bytecode), bytecode_loop_promote_bytecode),
+        promote(var(bytecode), bytecode_loop_promote_bytecode),
     bytecode_loop_promote_bytecode/
-          promote(var(pc), bytecode_loop_promote_pc),
+        promote(var(pc), bytecode_loop_promote_pc),
     bytecode_loop_promote_pc/
-          op(opcode, readlist, var(bytecode), var(pc),
-          op(pc, add, var(pc), const(1),
-          op(c, eq, var(opcode), const(jump_if_a),
-          if(var(c), op_jump_if_a, not_jump_if_a)))),
+        op(opcode, readlist, var(bytecode), var(pc),
+        op(pc, add, var(pc), const(1),
+        op(c, eq, var(opcode), const(jump_if_a),
+        if(var(c), op_jump_if_a, not_jump_if_a)))),
 
     % chain of ifs to emulate a switch
     not_jump_if_a/
@@ -988,7 +966,40 @@ program(bytecode_interpreter, [
     op_decr_a/
           op(a, sub, var(a), const(1), jump(bytecode_loop)),
     op_return_a/
-        return(var(a))]).
+        return(var(a))
+])
+
+]).
+
+run_callplus1(X, Res) :-
+    functions(Functions),
+    interp_function(callplus1, Functions, [X], Res).
+
+run_boxedloop(X, Res) :-
+    functions(Functions),
+    interp_function(boxedloop, Functions, [X, 3], Res).
+
+%trace_bugboxedloop(X, Res) :-
+%    function(Functions),(bugboxedloop, Code),
+%    do_trace(l, Code, [i/int1],  [int1/obj(int, [value/X])], Res).
+
+trace_boxedloop(X, Res) :-
+    functions(Functions),
+    lookup(boxedloop, Functions, func(_, _, Labels)),
+    do_trace(l, Labels, Functions,
+             [startval/X, xval/3, i/i, x/x, const0/const0, const1/const1, const2/const2],
+             [i/obj(int, [value/X]), x/obj(int, [value/3]),
+                const0/obj(int, [value/0]), const1/obj(int, [value/1]), const2/obj(int, [value/2])],
+             [],
+             Res).
+
+trace_callloop(I, X, Res) :-
+    functions(Functions),
+    lookup(callloop, Functions, func(_, _, Labels)),
+    do_trace(callloop, l, Functions, [i/I, x/X], Res).
+
+% bytecode interpreter
+
 
 % an example bytecode, computing the square of the accumulator
 bytecode_square([
@@ -1023,8 +1034,8 @@ power_pe(X, Y) :-
     interp(Code, [x/X]).
 
 loop(X, Res) :-
-    program(loop, Code),
-    interp_label(b, Code, [i/X, x/3], Res).
+    functions(Functions),
+    interp_function(loop, Functions, [X, 3], Res).
 
 trace_loop(X, Res) :-
     program(loop, Code),
@@ -1033,9 +1044,8 @@ trace_loop(X, Res) :-
 
 run_interp(A, Res) :-
     bytecode_square(B),
-    Env = [bytecode/B, pc/0, a/A, r0/0, r1/0, r2/0],
-    program(bytecode_interpreter, Code),
-    interp_label(bytecode_loop, Code, Env, Res).
+    functions(Functions),
+    interp_function(interp, Functions, [B, A], Res).
 
 metatrace_interp(A, Res) :-
     bytecode_square(B),
@@ -1078,20 +1088,15 @@ test(check_functions) :-
     functions(P),
     check_syntax_interp(P).
 
-%test(power, true(Res = 1024)) :-
-%    trace,
-%    power(2, 10, Res).
-%
-%test(loop, true(Res = -5)) :-
-%    loop(100, Res).
-%
-%test(check_interp) :-
-%    program(bytecode_interpreter, P),
-%    check_syntax_interp(P).
-%
-%test(interp, true(Res = 256)) :-
-%    run_interp(16, Res).
-%
+test(power, true(Res = 1024)) :-
+    power(2, 10, Res).
+
+test(loop, true(Res = -5)) :-
+    loop(100, Res).
+
+test(interp, true(Res = 256)) :-
+    run_interp(16, Res).
+
 test(call, true(Res = 13)) :-
     run_callplus1(6, Res).
 
@@ -1127,41 +1132,41 @@ test(boxedloop) :-
 %test(execute_phi, true(Res = [i/ -1, x/3, x2/6, x3/7, c/0])) :-
 %    execute_phi([i/var(i2), x/const(3), x2/const(6), x3/const(7), c/var(c2)], [i/6, x/3, x2/6, x3/7, c/1, i2/ -1, c2/0], Res).
 %
-%test(escape_const) :-
-%    escape(const(1), [], [], x, x).
-%
-%test(escape_nonvirtual, true([H, T] = [[], loop])) :-
-%    escape(var(x), [], H, T, loop).
-%
-%test(escape_virtual_no_fields) :-
-%    escape(var(x), [x/obj(type, [])], NH, Trace, loop),
-%    Trace = new(x, type, loop),
-%    NH = [].
-%
-%test(escape_virtual_1_field) :-
-%    escape(var(x), [x/obj(type, [f/const(1)]), y/obj(type2, [])], NH, Trace, loop),
-%    Trace = new(x, type,
-%            set(var(x), f, const(1),
-%            loop)),
-%    NH = [y/obj(type2, [])].
-%
-%test(escape_virtual_virtual) :-
-%    escape(var(x), [x/obj(type, [f/var(y)]), y/obj(type2, [g/const(1)])], NH, Trace, loop),
-%    Trace = new(x, type,
-%            new(y, type2,
-%            set(var(y), g, const(1),
-%            set(var(x), f, var(y),
-%            loop)))),
-%    NH = [].
-%
-%test(escape_virtual_virtual_recursive) :-
-%    escape(var(x), [x/obj(type, [f/var(y)]), y/obj(type2, [g/var(x)])], NH, Trace, loop),
-%    Trace = new(x, type,
-%            new(y, type2,
-%            set(var(y), g, var(x),
-%            set(var(x), f, var(y),
-%            loop)))),
-%    NH = [].
+test(escape_const) :-
+    escape(const(1), [], [], x, x).
+
+test(escape_nonvirtual, true([H, T] = [[], loop])) :-
+    escape(var(x), [], H, T, loop).
+
+test(escape_virtual_no_fields) :-
+    escape(var(x), [x/obj(type, [])], NH, Trace, loop),
+    Trace = new(x, type, loop),
+    NH = [].
+
+test(escape_virtual_1_field) :-
+    escape(var(x), [x/obj(type, [f/const(1)]), y/obj(type2, [])], NH, Trace, loop),
+    Trace = new(x, type,
+            set(var(x), f, const(1),
+            loop)),
+    NH = [y/obj(type2, [])].
+
+test(escape_virtual_virtual) :-
+    escape(var(x), [x/obj(type, [f/var(y)]), y/obj(type2, [g/const(1)])], NH, Trace, loop),
+    Trace = new(x, type,
+            new(y, type2,
+            set(var(y), g, const(1),
+            set(var(x), f, var(y),
+            loop)))),
+    NH = [].
+
+test(escape_virtual_virtual_recursive) :-
+    escape(var(x), [x/obj(type, [f/var(y)]), y/obj(type2, [g/var(x)])], NH, Trace, loop),
+    Trace = new(x, type,
+            new(y, type2,
+            set(var(y), g, var(x),
+            set(var(x), f, var(y),
+            loop)))),
+    NH = [].
 %
 %%test(trace_loop, true(Res = -5)) :-
 %%    trace_loop(100, Res).
@@ -1195,8 +1200,8 @@ test(trace_callloop, true(Res = -10)) :-
 %test(trace_boxedloop, true(Res = -5)) :-
 %    trace_boxedloop(100, Res).
 %
-%test(trace_power, true(Res = 1024)) :-
-%     trace_power(2, 10, Res).
+test(trace_power, true(Res = 1024)) :-
+     trace_power(2, 10, Res).
 %%
 %%test(trace_interp, true(Res = 256)) :-
 %%    trace_interp(16, Res).
