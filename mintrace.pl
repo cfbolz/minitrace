@@ -336,7 +336,7 @@ check_syntax_trace(guard_class(_, _, L, T), Labels) :-
 check_syntax_trace(enter(L, Labels, _, _, T), Labels) :-
     lookup(L, Labels, _),
     check_syntax_trace(T, Labels).
-check_syntax_trace(return(Arg, T), Labels) :-
+check_syntax_trace(return(_, T), Labels) :-
     check_syntax_trace(T, Labels).
 check_syntax_trace(loop, _).
 
@@ -354,7 +354,7 @@ trace(promote(Arg, L), Labels, Functions, Env, Heap, guard(Arg, Val, L, T), Trac
     resolve(Arg, Env, Val),
     trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(return(Arg), Labels, Functions, Env, Heap, return(Arg, T), TraceAnchor, Stack, Res) :-
+trace(return(Arg), _, Functions, Env, Heap, return(Arg, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Val),
     trace_return(Stack, Val, Functions, Heap, T, TraceAnchor, Res).
 
@@ -505,9 +505,7 @@ runtrace_opt(loop(Renames), Labels, Functions, Env, Heap, TraceFromStart, Stack,
 execute_fallback(resume(ResumeEnv, ResumeStack), Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, Stack) :-
     ensure(ResumeStack = []),
     write(ResumeEnv), nl,
-    execute_fallback(ResumeEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
-    InterpStack = Stack.
-    
+    execute_fallback(ResumeEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap).
 
 
 execute_fallback([], _, _, [], H, H).
@@ -746,32 +744,6 @@ timestwoplus1/func([arg], noloop, [
 ]),
 
 
-% do
-%    i -= 1
-% while i >= 0
-%
-bugboxedloop/func([i], loop, [
-    start/
-        new(i, int,
-        set(var(i), value, var(startval),
-        jump(l))),
-    l/
-        get(ival, var(i), value,
-        op(nival, sub, var(ival), const(1),
-        new(i, int,
-        set(var(i), value, var(nival),
-        if_class(var(i), int, check, error))))),
-    check/
-        get(ival, var(i), value,
-        op(c, ge, var(ival), const(0),
-        if(var(c), l, l_done))),
-    l_done/
-        get(ival, var(i), value,
-        return(var(ival))),
-    error/
-        return(const(-1000))
-]),
-
 
 % arithmetic example
 % while i >= 0
@@ -979,10 +951,6 @@ run_boxedloop(X, Res) :-
     functions(Functions),
     interp_function(boxedloop, Functions, [X, 3], Res).
 
-%trace_bugboxedloop(X, Res) :-
-%    function(Functions),(bugboxedloop, Code),
-%    do_trace(l, Code, [i/int1],  [int1/obj(int, [value/X])], Res).
-
 trace_boxedloop(X, Res) :-
     functions(Functions),
     lookup(boxedloop, Functions, func(_, _, Labels)),
@@ -1028,18 +996,13 @@ trace_power(X, Y, Res) :-
     functions(Functions),
     do_trace(power, power_rec, Functions, [x/X, y/Y, res/1], Res).
 
-power_pe(X, Y) :-
-    do_pe(power, [y/Y], Label),
-    block(Label, Code),
-    interp(Code, [x/X]).
-
 loop(X, Res) :-
     functions(Functions),
     interp_function(loop, Functions, [X, 3], Res).
 
 trace_loop(X, Res) :-
-    program(loop, Code),
-    do_trace(b, Code, [i/X, x/3], Res).
+    functions(Functions),
+    do_trace(loop, l, Functions, [i/X, x/3], Res).
 
 
 run_interp(A, Res) :-
@@ -1100,7 +1063,7 @@ test(interp, true(Res = 256)) :-
 test(call, true(Res = 13)) :-
     run_callplus1(6, Res).
 
-test(boxedloop) :-
+test(boxedloop, true(Res = -4)) :-
     run_boxedloop(100, Res).
 
 %test(optimize) :-
@@ -1167,9 +1130,9 @@ test(escape_virtual_virtual_recursive) :-
             set(var(x), f, var(y),
             loop)))),
     NH = [].
-%
-%%test(trace_loop, true(Res = -5)) :-
-%%    trace_loop(100, Res).
+
+test(trace_loop, true(Res = -5)) :-
+    trace_loop(100, Res).
 %
 %test(trace_newsetguardget, true(Res = 5)) :-
 %    Labels = [
@@ -1192,14 +1155,13 @@ test(escape_virtual_virtual_recursive) :-
 %        loop))),
 %    optimize(Trace, [i/var(i)], [], [i], NewTrace).
 %
-%test(trace_bugboxedloop) :-
-%    trace_bugboxedloop(100, _).
-%
+
 test(trace_callloop, true(Res = -10)) :-
     trace_callloop(100, 5, Res).
-%test(trace_boxedloop, true(Res = -5)) :-
-%    trace_boxedloop(100, Res).
-%
+
+test(trace_boxedloop, true(Res = -4)) :-
+    trace_boxedloop(100, Res).
+
 test(trace_power, true(Res = 1024)) :-
      trace_power(2, 10, Res).
 %%
