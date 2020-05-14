@@ -349,14 +349,14 @@ trace(promote(Arg, L), Labels, Functions, Env, Heap, guard(Arg, Val, L, T), Trac
     resolve(Arg, Env, Val),
     trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(return(Arg), Labels, Functions, Env, Heap, return(Arg, ResultVar, T), TraceAnchor, Stack, Res) :-
+trace(return(Arg), Labels, Functions, Env, Heap, return(Arg, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Val),
-    trace_return(Stack, Val, ResultVar, Functions, Heap, T, TraceAnchor, Res).
+    trace_return(Stack, Val, Functions, Heap, T, TraceAnchor, Res).
 
-trace_return([], Val, _, _, _, _, _, _, _, Val) :-
+trace_return([], Val, _, _, _, _, _, _, Val) :-
     print(Val), nl.
 
-trace_return([frame(L, Labels, Env, ResultVar)|Stack], Val, ResultVar, Functions, Heap, T, TraceAnchor, Res) :-
+trace_return([frame(L, Labels, Env, ResultVar)|Stack], Val, Functions, Heap, T, TraceAnchor, Res) :-
     write_env(Env, ResultVar, Val, NEnv),
     trace_jump(L, Labels, Functions, NEnv, Heap, T, TraceAnchor, Stack, Res).
 
@@ -411,7 +411,7 @@ trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, call(Res
     [Label/_ | _] = SubLabels,
     trace_jump(L, SubLabels, Functions, StartEnv, Heap, T, TraceAnchor, NStack, Res).
 
-trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, enter(Mapping, T), TraceAnchor, Stack, Res) :-
+trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, enter(L, Labels, ResultVar, Mapping, T), TraceAnchor, Stack, Res) :-
     lookup(FuncName, Functions, func(ArgNames, noloop, SubLabels)), !,
     resolve_args(Args, Env, RArgs),
     create_start_env(ArgNames, RArgs, StartEnv),
@@ -458,13 +458,13 @@ runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Functions, Env, Heap, 
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
     runtrace_opt(Rest, Labels, Functions, NEnv, Heap, TraceFromStart, Stack, Res).
 
-runtrace_opt(guard(Arg, C, SSAEnv, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(guard(Arg, C, ResumeData, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Val),
     (Val == C ->
         runtrace_opt(Rest, Labels, Functions, Env, Heap, TraceFromStart, Stack, Res)
     ;
-        execute_fallback(SSAEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
-        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, Stack, Res)
+        execute_fallback(ResumeData, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack),
+        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, InterpStack, Res)
     ).
 
 runtrace_opt(new(ResultVar, Class, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
@@ -485,19 +485,26 @@ runtrace_opt(set(Arg, Field, ValueArg, Rest), Labels, Functions, Env, Heap, Trac
     set_field(Address, Field, Value, Heap, NHeap),
     runtrace_opt(Rest, Labels, Functions, Env, NHeap, TraceFromStart, Stack, Res).
 
-runtrace_opt(guard_class(Arg, Class, SSAEnv, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(guard_class(Arg, Class, ResumeData, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Val),
     get_object(Val, Heap, obj(Class1, _)),
     (Class == Class1 ->
         runtrace_opt(Rest, Labels, Functions, Env, Heap, TraceFromStart, Stack, Res)
     ;
-        execute_fallback(SSAEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
-        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, Stack, Res)
+        execute_fallback(ResumeData, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack),
+        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, InterpStack, Res)
     ).
 
 runtrace_opt(loop(Renames), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
     execute_phi(Renames, Env, NewEnv),
     runtrace_opt(TraceFromStart, Labels, Functions, NewEnv, Heap, TraceFromStart, Stack, Res).
+
+execute_fallback(resume(ResumeEnv, ResumeStack), Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack) :-
+    ensure(ResumeStack = []),
+    write(ResumeEnv), nl, trace,
+    execute_fallback(ResumeEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap),
+    InterpStack = Stack.
+    
 
 
 execute_fallback([], _, _, [], H, H).
@@ -549,11 +556,7 @@ initialize_ssa_env([Var/_ | Rest1], [Var/var(Var) | Rest2], [Var | Rest3]) :-
 sresolve(const(X), _, const(X)).
 sresolve(var(V), PEnv, X) :- lookup(V, PEnv, X).
 
-generate_phi_nodes([], _, []).
-generate_phi_nodes([Var | Rest], SSAEnv, [Var/Val | Rest2]) :-
-    lookup(Var, SSAEnv, Val),
-    generate_phi_nodes(Rest, SSAEnv, Rest2).
-
+generate_resume_data(SSAEnv, Stack, resume(SSAEnv, Stack)).
 
 % optimize(Trace, SSAEnv, DefinedVars, Stack, NewTrace) optimize trace Trace under SSA-environment SSAEnv
 
@@ -572,11 +575,12 @@ optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, AbsHeap, DefinedVars, Stac
     ),
     optimize(Rest, NEnv, AbsHeap, DefinedVars, Stack, RestTrace).
 
-optimize(enter(Renames, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
+optimize(enter(L, Labels, ResultVar, Renames, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
+    trace,
     execute_phi(Renames, SSAEnv, NEnv),
-    optimize(Rest, NEnv, AbsHeap, DefinedVars, [SSAEnv | Stack], NewTrace).
+    optimize(Rest, NEnv, AbsHeap, DefinedVars, [frame(L, Labels, SSAEnv, ResultVar) | Stack], NewTrace).
 
-optimize(return(Res, ResVar, RestTrace), SSAEnv, AbsHeap, DefinedVars, [TargetSSAEnv | Stack], NewTrace) :-
+optimize(return(Res, RestTrace), SSAEnv, AbsHeap, DefinedVars, [frame(L, Labels, TargetSSAEnv, ResVar)| Stack], NewTrace) :-
     trace,
     sresolve(Res, SSAEnv, RRes),
     write_env(TargetSSAEnv, ResVar, RRes, NEnv),
@@ -603,8 +607,8 @@ optimize(guard(Arg, C, L, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) 
         Arg = var(OrigVar),
         Val = var(SSAVar),
         write_env(SSAEnv, OrigVar, const(C), NEnv),
-        %generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
-        NewTrace = guard(Val, C, PhiNodes, AbsHeap, L, RestTrace)
+        generate_resume_data(SSAEnv, Stack, ResumeStack),
+        NewTrace = guard(Val, C, ResumeStack, AbsHeap, L, RestTrace)
     ),
     optimize(Rest, NEnv, AbsHeap, DefinedVars, Stack, RestTrace).
 
@@ -659,8 +663,8 @@ optimize(guard_class(Arg, Class, L, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, 
         NewTrace = RestTrace
     ;
         escape(RArg, AbsHeap, NHeap, NewTrace, NewTrace2),
-        %generate_phi_nodes(DefinedVars, SSAEnv, PhiNodes),
-        NewTrace2 = guard_class(RArg, Class, PhiNodes, AbsHeap, L, RestTrace)
+        generate_resume_data(SSAEnv, Stack, ResumeStack),
+        NewTrace2 = guard_class(RArg, Class, ResumeStack, AbsHeap, L, RestTrace)
     ),
     optimize(Rest, SSAEnv, NHeap, DefinedVars, Stack, RestTrace).
 
@@ -718,6 +722,26 @@ loop/func([i], loop, [
         op(x3, add, var(x2), const(1),
         op(i, sub, var(i), var(x3),
         jump(l))))
+]),
+
+callloop/func([i, x], loop, [
+    l/
+        op(c, ge, var(i), const(0),
+        if(var(c), b, l_done)),
+    l_done/
+        return(var(i)),
+    b/
+        call(x3, timestwoplus1, [var(x)], b2),
+    b2/
+        op(i, sub, var(i), var(x3),
+        jump(l))
+]),
+
+timestwoplus1/func([arg], noloop, [
+    start/
+        op(arg, mul, var(arg), const(2),
+        op(arg, add, var(arg), const(1),
+        return(var(arg))))
 ]),
 
 
@@ -880,6 +904,11 @@ trace_boxedloop(X, Res) :-
                 const0/obj(int, [value/0]), const1/obj(int, [value/1]), const2/obj(int, [value/2])],
              [],
              Res).
+
+trace_callloop(I, X, Res) :-
+    functions(Functions),
+    lookup(callloop, Functions, func(_, _, Labels)),
+    do_trace(callloop, l, Functions, [i/I, x/X], Res).
 
 % bytecode interpreter
 
@@ -1161,11 +1190,13 @@ test(boxedloop) :-
 %test(trace_bugboxedloop) :-
 %    trace_bugboxedloop(100, _).
 %
-test(trace_boxedloop, true(Res = -5)) :-
-    trace_boxedloop(100, Res).
+test(trace_callloop, true(Res = -10)) :-
+    trace_callloop(100, 5, Res).
+%test(trace_boxedloop, true(Res = -5)) :-
+%    trace_boxedloop(100, Res).
 %
-test(trace_power, true(Res = 1024)) :-
-     trace_power(2, 10, Res).
+%test(trace_power, true(Res = 1024)) :-
+%     trace_power(2, 10, Res).
 %%
 %%test(trace_interp, true(Res = 256)) :-
 %%    trace_interp(16, Res).
