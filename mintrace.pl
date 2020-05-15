@@ -335,10 +335,13 @@ interp_op(ResultVar, Op, Arg1, Arg2, IState, NIState) :-
 
 % heap manipulation
 
+new_object_heap(Class, Heap, [NewObj/obj(Class, [])|Heap], NewObj) :-
+    gensym(Class, NewObj). % invent address
+
 new_object(ResultVar, Class, IState, NIState) :-
     get_heap(IState, Heap),
-    gensym(Class, NewObj), % invent address
-    set_heap(IState, [NewObj/obj(Class, [])|Heap], IState1),
+    new_object_heap(Class, Heap, NHeap, NewObj),
+    set_heap(IState, NHeap, IState1),
     get_env(IState1, Env),
     write_env(Env, ResultVar, NewObj, NEnv),
     set_env(IState1, NEnv, NIState).
@@ -569,9 +572,19 @@ runtrace_opt(loop(Renames), Code, IState, TraceFromStart) :-
 execute_fallback(OState, IState, NIState) :-
     write(OState), nl,
     write(IState), nl,
-    trace, xxx.
+    get_env(OState, SSAEnv),
+    get_stack(OState, ResumeStack),
+    get_heap(OState, AbsHeap),
+    get_env(IState, Env),
+    get_heap(IState, Heap),
+    get_stack(IState, Stack),
+    trace,
+    execute_fallback(SSAEnv, ResumeStack, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack),
+    get_result(IState, Res),
+    interp_state(InterpEnv, InterpHeap, InterpStack, Res, NIState).
 
-execute_fallback(resume(ResumeEnv, ResumeStack), Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, Stack) :-
+execute_fallback(ResumeEnv, ResumeStack, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, Stack) :-
+
     ensure(ResumeStack = []),
     write(ResumeEnv), nl,
     execute_fallback(ResumeEnv, Env, AbsHeap, InterpEnv, Heap, InterpHeap).
@@ -584,10 +597,10 @@ execute_fallback([Var/Val | T], Env, AbsHeap, [Var/NVal | T1], Heap, NHeap) :-
 
 execute_escape(const(C), Env, Env, AbsHeap, AbsHeap, Heap, Heap, C).
 execute_escape(var(Var), Env, Env, AbsHeap, AbsHeap, Heap, Heap, Val) :-
-    maybe_get_object(Var, AbsHeap, not_virtual), !, lookup(Var, Env, Val).
+    maybe_get_object_heap(Var, AbsHeap, not_virtual), !, lookup(Var, Env, Val).
 execute_escape(var(Var), Env, NEnv, AbsHeap, NAbsHeap, Heap, NHeap, NewObj) :-
-    maybe_get_object(Var, AbsHeap, obj(Cls, Fields)),
-    new_object(Cls, Heap, Heap1, NewObj),
+    maybe_get_object_heap(Var, AbsHeap, obj(Cls, Fields)),
+    new_object_heap(Cls, Heap, Heap1, NewObj),
     write_env(Env, Var, NewObj, Env1),
     remove_from_env(Var, AbsHeap, AbsHeap1),
     execute_escape_fields(Fields, NewObj, Env1, NEnv, AbsHeap1, NAbsHeap, Heap1, NHeap).
