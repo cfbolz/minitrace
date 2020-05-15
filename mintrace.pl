@@ -101,7 +101,7 @@ check_syntax_interp([Name/func(Args, _, Labels) | Rest], AllFuncs) :-
     atom(Name),
     write(checking(Name)), nl,
     check_syntax_interp_allargs(Args),
-    check_syntax_interp_labels(Labels, Labels, AllFuncs),
+    check_syntax_interp_labels(Labels, code(Labels, AllFuncs)),
     write(ok(Name)), nl,
     check_syntax_interp(Rest, AllFuncs).
 
@@ -110,67 +110,67 @@ check_syntax_interp_allargs([H|T]) :-
     atom(H),
     check_syntax_interp_allargs(T).
 
-:- det(check_syntax_interp_labels/3).
+:- det(check_syntax_interp_labels/2).
 
-check_syntax_interp_labels([], _, _).
-check_syntax_interp_labels([Name/Op | Rest], AllLabels, Functions) :-
+check_syntax_interp_labels([], _).
+check_syntax_interp_labels([Name/Op | Rest], Code) :-
     atom(Name),
-    check_syntax_interp_op(Op, AllLabels, Functions),
-    check_syntax_interp_labels(Rest, AllLabels, Functions).
+    check_syntax_interp_op(Op, Code),
+    check_syntax_interp_labels(Rest, Code).
 
-:- det(check_syntax_interp_op/3).
+:- det(check_syntax_interp_op/2).
 
-check_syntax_interp_op(op(Res, Op, Arg1, Arg2, Rest), Labels, Functions) :-
+check_syntax_interp_op(op(Res, Op, Arg1, Arg2, Rest), Code) :-
     atom(Res), member(Op, [mul, add, sub, ge, eq, assign, readlist]),
     check_syntax_interp_arg(Arg1),
     check_syntax_interp_arg(Arg2),
-    check_syntax_interp_op(Rest, Labels, Functions).
+    check_syntax_interp_op(Rest, Code).
 
-check_syntax_interp_op(new(Res, Shape, Rest), Labels, Functions) :-
+check_syntax_interp_op(new(Res, Shape, Rest), Code) :-
     atom(Res),
     atom(Shape),
-    check_syntax_interp_op(Rest, Labels, Functions).
+    check_syntax_interp_op(Rest, Code).
 
-check_syntax_interp_op(set(Arg, Field, ArgValue, Rest), Labels, Functions) :-
+check_syntax_interp_op(set(Arg, Field, ArgValue, Rest), Code) :-
     check_syntax_interp_arg(Arg),
     check_syntax_interp_arg(ArgValue),
     atom(Field),
-    check_syntax_interp_op(Rest, Labels, Functions).
+    check_syntax_interp_op(Rest, Code).
 
-check_syntax_interp_op(get(Res, Arg, Field, Rest), Labels, Functions) :-
+check_syntax_interp_op(get(Res, Arg, Field, Rest), Code) :-
     atom(Res),
     check_syntax_interp_arg(Arg),
     atom(Field),
-    check_syntax_interp_op(Rest, Labels, Functions).
+    check_syntax_interp_op(Rest, Code).
 
-check_syntax_interp_op(if_class(Arg, Shape, L1, L2), Labels, _) :-
+check_syntax_interp_op(if_class(Arg, Shape, L1, L2), Code) :-
     atom(Shape),
     check_syntax_interp_arg(Arg),
-    check_label_exists(L1, Labels),
-    check_label_exists(L2, Labels).
+    check_label_exists(L1, Code),
+    check_label_exists(L2, Code).
 
-check_syntax_interp_op(promote(Arg, L1), Labels, _) :-
+check_syntax_interp_op(promote(Arg, L1), Code) :-
     check_syntax_interp_arg(Arg),
-    check_label_exists(L1, Labels).
+    check_label_exists(L1, Code).
 
-check_syntax_interp_op(call(Res, FuncName, Args, L), Labels, Functions) :-
+check_syntax_interp_op(call(Res, FuncName, Args, L), Code) :-
     atom(Res),
     check_syntax_interp_args(Args),
-    check_label_exists(L, Labels),
-    check_function_exists(FuncName, Functions).
+    check_label_exists(L, Code),
+    check_function_exists(FuncName, Code).
 
-check_syntax_interp_op(if(Arg, L1, L2), Labels, _) :-
+check_syntax_interp_op(if(Arg, L1, L2), Code) :-
     check_syntax_interp_arg(Arg),
-    check_label_exists(L1, Labels),
-    check_label_exists(L2, Labels).
+    check_label_exists(L1, Code),
+    check_label_exists(L2, Code).
 
-check_syntax_interp_op(jump(L), Labels, _) :-
-    check_label_exists(L, Labels).
+check_syntax_interp_op(jump(L), Code) :-
+    check_label_exists(L, Code).
 
-check_syntax_interp_op(error(Reason), _, _) :-
+check_syntax_interp_op(error(Reason), _) :-
     atom(Reason).
 
-check_syntax_interp_op(return(Arg), _, _) :-
+check_syntax_interp_op(return(Arg), _) :-
     check_syntax_interp_arg(Arg).
 
 check_syntax_interp_args([]).
@@ -181,90 +181,100 @@ check_syntax_interp_args([Arg|T]) :-
 check_syntax_interp_arg(var(Name)) :- atom(Name).
 check_syntax_interp_arg(const(_)).
 
-check_label_exists(L, Labels) :-
-    lookup(L, Labels, _).
+check_label_exists(L, Code) :-
+    lookup_label(L, Code, _).
 
-check_function_exists(FuncName, Functions) :-
+check_function_exists(FuncName, code(_, Functions)) :-
     lookup(FuncName, Functions, _).
 
 % _______________
 
 
-interp_function(Funcname, Functions, Args, Res) :-
-    lookup(Funcname, Functions, func(ArgNames, _Loopy, Labels)),
+interp_function(FuncName, Functions, Args, Res) :-
+    lookup_function(FuncName, code([], Functions), ArgNames, Code, FirstLabel),
     ensure(same_length(ArgNames, Args)),
     create_start_env(ArgNames, Args, Env),
-    [Label/_ | _] = Labels,
-    interp_label(Label, Labels, Functions, Env, [], Res).
+    interp_label(FirstLabel, Code, Env, [], Res).
+
+lookup_label(Label, code(Labels, _), Block) :-
+    lookup(Label, Labels, Block).
+
+lookup_function(FuncName, Code, ArgNames, FuncCode, FirstLabel) :-
+    lookup_function(FuncName, Code, ArgNames, _, FuncCode, FirstLabel).
+
+lookup_function(FuncName, code(_, Functions), ArgNames, Loopy, code(Labels, Functions), FirstLabel) :-
+    lookup(FuncName, Functions, func(ArgNames, Loopy, Labels)),
+    Labels = [FirstLabel/ _| _].
+
 
 create_start_env([], [], []).
 create_start_env([Name|T1], [Val|T2], [Name/Val|T3]) :-
     create_start_env(T1, T2, T3).
 
-interp_label(Label, Labels, Functions, Env, Stack, Res) :-
-    interp_label(Label, Labels, Functions, Env, [], Stack, Res).
+interp_label(Label, Code, Env, Stack, Res) :-
+    interp_label(Label, Code, Env, [], Stack, Res).
 
-interp_label(Label, Labels, Functions, Env, Heap, Stack, Res) :-
-    lookup(Label, Labels, Op),
-    interp(Op, Labels, Functions, Env, Heap, Stack, Res).
+interp_label(Label, Code, Env, Heap, Stack, Res) :-
+    lookup_label(Label, Code, Op),
+    interp(Op, Code, Env, Heap, Stack, Res).
 
-% interp(Code, Labels, Functions, Env, Stack, Res) executes flow graph program Code in environment Env
-:- det(interp/7).
-interp(op(ResultVar, Op, Arg1, Arg2, NextOp), Labels, Functions, Env, Heap, Stack, Res) :-
+% interp(Block, Code, Env, Stack, Res) executes flow graph program Block in environment Env
+:- det(interp/6).
+interp(op(ResultVar, Op, Arg1, Arg2, NextOp), Code, Env, Heap, Stack, Res) :-
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
-    interp(NextOp, Labels, Functions, NEnv, Heap, Stack, Res).
+    interp(NextOp, Code, NEnv, Heap, Stack, Res).
 
-interp(promote(_, L), Labels, Functions, Env, Heap, Stack, Res) :-
-    lookup(L, Labels, Code),
-    interp(Code, Labels, Functions, Env, Heap, Stack, Res).
+interp(promote(_, L), Code, Env, Heap, Stack, Res) :-
+    lookup_label(L, Code, Block),
+    interp(Block, Code, Env, Heap, Stack, Res).
 
-interp(jump(L), Labels, Functions, Env, Heap, Stack, Res) :-
-    lookup(L, Labels, Code),
-    interp(Code, Labels, Functions, Env, Heap, Stack, Res).
+interp(jump(L), Code, Env, Heap, Stack, Res) :-
+    lookup_label(L, Code, Block),
+    interp(Block, Code, Env, Heap, Stack, Res).
 
-interp(if(Arg, L1, L2), Labels, Functions, Env, Heap, Stack, Res) :-
+interp(if(Arg, L1, L2), Code, Env, Heap, Stack, Res) :-
     resolve(Arg, Env, RArg),
     (RArg == 0 ->
         L = L2
     ;
         L = L1
     ),
-    lookup(L, Labels, Code),
-    interp(Code, Labels, Functions, Env, Heap, Stack, Res).
+    lookup_label(L, Code, Block),
+    interp(Block, Code, Env, Heap, Stack, Res).
 
-interp(return(Arg), _, Functions, Env, Heap, Stack, Res) :-
+interp(return(Arg), _, Env, Heap, Stack, Res) :-
     resolve(Arg, Env, Val),
-    interp_return(Stack, Val, Functions, Heap, Res).
+    interp_return(Stack, Val, Heap, Res).
 
-interp_return([], Val, _, _, Val) :-
+interp_return([], Val, _, Val) :-
     print(Val), nl.
 
-interp_return([frame(L, Labels, Env, ResultVar)| Stack], Val, Functions, Heap, Res) :-
-    lookup(L, Labels, Code),
+interp_return([frame(L, Code, Env, ResultVar)| Stack], Val, Heap, Res) :-
+    lookup_label(L, Code, Block),
     write_env(Env, ResultVar, Val, NEnv),
-    interp(Code, Labels, Functions, NEnv, Heap, Stack, Res).
+    interp(Block, Code, NEnv, Heap, Stack, Res).
 
 % object operations
 
-interp(new(ResultVar, Class, NextOp), Labels, Functions, Env, Heap, Stack, Res) :-
+interp(new(ResultVar, Class, NextOp), Code, Env, Heap, Stack, Res) :-
     new_object(Class, Heap, NHeap, NewObj),
     write_env(Env, ResultVar, NewObj, NEnv),
-    interp(NextOp, Labels, Functions, NEnv, NHeap, Stack, Res).
+    interp(NextOp, Code, NEnv, NHeap, Stack, Res).
 
-interp(get(ResultVar, Arg, Field, NextOp), Labels, Functions, Env, Heap, Stack, Res) :-
+interp(get(ResultVar, Arg, Field, NextOp), Code, Env, Heap, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, Obj),
     get_field(Obj, Field, Value),
     write_env(Env, ResultVar, Value, NEnv),
-    interp(NextOp, Labels, Functions, NEnv, Heap, Stack, Res).
+    interp(NextOp, Code, NEnv, Heap, Stack, Res).
 
-interp(set(Arg, Field, ValueArg, NextOp), Labels, Functions, Env, Heap, Stack, Res) :-
+interp(set(Arg, Field, ValueArg, NextOp), Code, Env, Heap, Stack, Res) :-
     resolve(Arg, Env, Address),
     resolve(ValueArg, Env, Value),
     set_field(Address, Field, Value, Heap, NHeap),
-    interp(NextOp, Labels, Functions, Env, NHeap, Stack, Res).
+    interp(NextOp, Code, Env, NHeap, Stack, Res).
 
-interp(if_class(Arg, Cls, L1, L2), Labels, Functions, Env, Heap, Stack, Res) :-
+interp(if_class(Arg, Cls, L1, L2), Code, Env, Heap, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, obj(Cls1, _)),
     (Cls == Cls1 ->
@@ -272,18 +282,18 @@ interp(if_class(Arg, Cls, L1, L2), Labels, Functions, Env, Heap, Stack, Res) :-
     ;
         L = L2
     ),
-    lookup(L, Labels, Code),
-    interp(Code, Labels, Functions, Env, Heap, Stack, Res).
+    lookup_label(L, Code, Block),
+    interp(Block, Code, Env, Heap, Stack, Res).
 
 % call
 
-interp(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, Stack, Res) :-
-    lookup(FuncName, Functions, func(ArgNames, _Loopy, SubLabels)),
+interp(call(ResultVar, FuncName, Args, L), Code, Env, Heap, Stack, Res) :-
+    lookup_function(FuncName, Code, ArgNames, NewCode, FirstLabel),
     resolve_args(Args, Env, RArgs),
     create_start_env(ArgNames, RArgs, StartEnv),
-    NStack = [frame(L, Labels, Env, ResultVar) | Stack],
+    NStack = [frame(L, Code, Env, ResultVar) | Stack],
     [Label/_ | _] = SubLabels,
-    interp_label(Label, SubLabels, Functions, StartEnv, Heap, NStack, Res).
+    interp_label(Label, NewCode, StartEnv, Heap, NStack, Res).
 
 interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv) :-
     resolve(Arg1, Env, RArg1),
@@ -314,10 +324,10 @@ set_field(Address, Field, Value, Heap, NHeap) :-
 % do_trace(Label, Env) start tracing of code at label Label with environment Env
 do_trace(FuncName, L, Functions, Env, Res) :-
     lookup(FuncName, Functions, func(_, _, Labels)),
-    do_trace(L, Labels, Functions, Env, [], [], Res).
-do_trace(L, Labels, Functions, Env, Heap, Stack, Res) :-
-    lookup(L, Labels, StartCode),
-    trace(StartCode, Labels, Functions, Env, Heap, ProducedTrace, traceanchor(L, ProducedTrace), Stack, Res).
+    do_trace(L, code(Labels, Functions), Env, [], [], Res).
+do_trace(L, Code, Env, Heap, Stack, Res) :-
+    lookup_label(L, Code, StartCode),
+    trace(StartCode, Code, Env, Heap, ProducedTrace, traceanchor(L, ProducedTrace), Stack, Res).
 
 check_syntax_trace(op(_, _, _, _, T), Labels) :-
     check_syntax_trace(T, Labels).
@@ -343,32 +353,32 @@ check_syntax_trace(loop, _).
 % trace(Code, Labels, Env, Trace, TraceAnchor) trace the code Code in environment Env
 % yielding trace Trace. The TraceAnchor contains information about where to end
 % tracing and the full trace.
-:- det(trace/9).
+:- det(trace/8).
 
-trace(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Functions, Env, Heap,
+trace(op(ResultVar, Op, Arg1, Arg2, Rest), Code, Env, Heap,
       op(ResultVar, Op, Arg1, Arg2, T), TraceAnchor, Stack, Res) :-
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
-    trace(Rest, Labels, Functions, NEnv, Heap, T, TraceAnchor, Stack, Res).
+    trace(Rest, Code, NEnv, Heap, T, TraceAnchor, Stack, Res).
 
-trace(promote(Arg, L), Labels, Functions, Env, Heap, guard(Arg, Val, L, T), TraceAnchor, Stack, Res) :-
+trace(promote(Arg, L), Code, Env, Heap, guard(Arg, Val, L, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Val),
-    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
+    trace_jump(L, Code, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(return(Arg), _, Functions, Env, Heap, return(Arg, T), TraceAnchor, Stack, Res) :-
+trace(return(Arg), Code, Env, Heap, return(Arg, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Val),
-    trace_return(Stack, Val, Functions, Heap, T, TraceAnchor, Res).
+    trace_return(Stack, Val, Heap, T, TraceAnchor, Res).
 
-trace_return([], Val, _, _, _, _, _, _, Val) :-
+trace_return([], Val, _, _, _, Val) :-
     print(Val), nl.
 
-trace_return([frame(L, Labels, Env, ResultVar)|Stack], Val, Functions, Heap, T, TraceAnchor, Res) :-
+trace_return([frame(L, Code, Env, ResultVar)|Stack], Val, Heap, T, TraceAnchor, Res) :-
     write_env(Env, ResultVar, Val, NEnv),
-    trace_jump(L, Labels, Functions, NEnv, Heap, T, TraceAnchor, Stack, Res).
+    trace_jump(L, Code, NEnv, Heap, T, TraceAnchor, Stack, Res).
 
-trace(jump(L), Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res) :-
-    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
+trace(jump(L), Code, Env, Heap, T, TraceAnchor, Stack, Res) :-
+    trace_jump(L, Code, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(if(Arg, L1, L2), Labels, Functions, Env, Heap, guard(Arg, Val, OL, T), TraceAnchor, Stack, Res) :-
+trace(if(Arg, L1, L2), Code, Env, Heap, guard(Arg, Val, OL, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Val),
     (Val == 0 ->
         L = L2, OL = L1
@@ -376,27 +386,27 @@ trace(if(Arg, L1, L2), Labels, Functions, Env, Heap, guard(Arg, Val, OL, T), Tra
         ensure(Val == 1),
         L = L1, OL = L2
     ),
-    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
+    trace_jump(L, Code, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(new(ResultVar, Class, NextOp), Labels, Functions, Env, Heap, new(ResultVar, Class, T), TraceAnchor, Stack, Res) :-
+trace(new(ResultVar, Class, NextOp), Code, Env, Heap, new(ResultVar, Class, T), TraceAnchor, Stack, Res) :-
     new_object(Class, Heap, NHeap, NewObj),
     write_env(Env, ResultVar, NewObj, NEnv),
-    trace(NextOp, Labels, Functions, NEnv, NHeap, T, TraceAnchor, Stack, Res).
+    trace(NextOp, Code, NEnv, NHeap, T, TraceAnchor, Stack, Res).
 
-trace(get(ResultVar, Arg, Field, NextOp), Labels, Functions, Env, Heap, get(ResultVar, Arg, Field, T), TraceAnchor, Stack, Res) :-
+trace(get(ResultVar, Arg, Field, NextOp), Code, Env, Heap, get(ResultVar, Arg, Field, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, Obj),
     get_field(Obj, Field, Value),
     write_env(Env, ResultVar, Value, NEnv),
-    trace(NextOp, Labels, Functions, NEnv, Heap, T, TraceAnchor, Stack, Res).
+    trace(NextOp, Code, NEnv, Heap, T, TraceAnchor, Stack, Res).
 
-trace(set(Arg, Field, ValueArg, NextOp), Labels, Functions, Env, Heap, set(Arg, Field, ValueArg, T), TraceAnchor, Stack, Res) :-
+trace(set(Arg, Field, ValueArg, NextOp), Code, Env, Heap, set(Arg, Field, ValueArg, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, Address),
     resolve(ValueArg, Env, Value),
     set_field(Address, Field, Value, Heap, NHeap),
-    trace(NextOp, Labels, Functions, Env, NHeap, T, TraceAnchor, Stack, Res).
+    trace(NextOp, Code, Env, NHeap, T, TraceAnchor, Stack, Res).
 
-trace(if_class(Arg, Cls, L1, L2), Labels, Functions, Env, Heap, guard_class(Arg, Cls, OL, T), TraceAnchor, Stack, Res) :-
+trace(if_class(Arg, Cls, L1, L2), Code, Env, Heap, guard_class(Arg, Cls, OL, T), TraceAnchor, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, obj(Cls1, _)),
     (Cls == Cls1 ->
@@ -404,38 +414,38 @@ trace(if_class(Arg, Cls, L1, L2), Labels, Functions, Env, Heap, guard_class(Arg,
     ;
         L = L2, OL = L1
     ),
-    trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
+    trace_jump(L, Code, Env, Heap, T, TraceAnchor, Stack, Res).
 
-trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, call(ResultVar, FuncName, Args, T), TraceAnchor, Stack, Res) :-
-    lookup(FuncName, Functions, Func), Func = func(ArgNames, loop, SubLabels), !,
+trace(call(ResultVar, FuncName, Args, L), Code, Env, Heap, call(ResultVar, FuncName, Args, T), TraceAnchor, Stack, Res) :-
+    lookup_function(FuncName, Code, ArgNames, Loopy, NewCode, FirstLabel),
+    Loopy = loop, !,
     trace,
     xxx,
     resolve_args(Args, Env, RArgs),
     create_start_env(ArgNames, RArgs, StartEnv),
-    NStack = [frame(L, Labels, Env, ResultVar) | Stack],
-    [Label/_ | _] = SubLabels,
-    trace_jump(L, SubLabels, Functions, StartEnv, Heap, T, TraceAnchor, NStack, Res).
+    NStack = [frame(L, Code, Env, ResultVar) | Stack],
+    trace_jump(L, SubCode, StartEnv, Heap, T, TraceAnchor, NStack, Res).
 
-trace(call(ResultVar, FuncName, Args, L), Labels, Functions, Env, Heap, enter(L, Labels, ResultVar, Mapping, T), TraceAnchor, Stack, Res) :-
-    lookup(FuncName, Functions, func(ArgNames, noloop, SubLabels)), !,
+trace(call(ResultVar, FuncName, Args, L), Code, Env, Heap, enter(L, Code, ResultVar, Mapping, T), TraceAnchor, Stack, Res) :-
+    lookup_function(FuncName, Code, ArgNames, Loopy, NewCode, Label),
+    Loopy = noloop, !,
     resolve_args(Args, Env, RArgs),
     create_start_env(ArgNames, RArgs, StartEnv),
     create_start_env(ArgNames, Args, Mapping),
-    NStack = [frame(L, Labels, Env, ResultVar) | Stack],
-    [Label/_ | _] = SubLabels,
-    trace_jump(Label, SubLabels, Functions, StartEnv, Heap, T, TraceAnchor, NStack, Res).
+    NStack = [frame(L, Code, Env, ResultVar) | Stack],
+    trace_jump(Label, NewCode, StartEnv, Heap, T, TraceAnchor, NStack, Res).
 
-trace_jump(L, Labels, Functions, Env, Heap, loop, traceanchor(L, FullTrace), Stack, Res) :-
+trace_jump(L, Code, Env, Heap, loop, traceanchor(L, FullTrace), Stack, Res) :-
     !, % prevent more tracing
     write(trace), nl, write_trace(FullTrace), nl, % --
     %check_syntax_trace(FullTrace, Labels),
-    do_optimize(FullTrace, Labels, Functions, Env, OptTrace),
+    do_optimize(FullTrace, Code, Env, OptTrace),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
-    runtrace_opt(OptTrace, Labels, Functions, Env, Heap, OptTrace, Stack, Res).
+    runtrace_opt(OptTrace, Code, Env, Heap, OptTrace, Stack, Res).
 
-trace_jump(L, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res) :-
-    lookup(L, Labels, Code),
-    trace(Code, Labels, Functions, Env, Heap, T, TraceAnchor, Stack, Res).
+trace_jump(L, Code, Env, Heap, T, TraceAnchor, Stack, Res) :-
+    lookup_label(L, Code, Block),
+    trace(Block, Code, Env, Heap, T, TraceAnchor, Stack, Res).
 
 
 % write_trace(Trace) print trace Trace in a readable way
@@ -453,54 +463,54 @@ write_trace(Op) :-
 % _______________ run traces _______________
 
 
-% runtrace_opt(Trace, Labels, Functions, Env, Heap, TraceFromStart) execute a trace Trace in environment Env
+% runtrace_opt(Trace, Code, Env, Heap, TraceFromStart) execute a trace Trace in environment Env
 % with the full trace being also given as argument TraceFromStart
 
-:- det(runtrace_opt/8).
-runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+:- det(runtrace_opt/7).
+runtrace_opt(op(ResultVar, Op, Arg1, Arg2, Rest), Code, Env, Heap, TraceFromStart, Stack, Res) :-
     interp_op(ResultVar, Op, Arg1, Arg2, Env, NEnv),
-    runtrace_opt(Rest, Labels, Functions, NEnv, Heap, TraceFromStart, Stack, Res).
+    runtrace_opt(Rest, Code, NEnv, Heap, TraceFromStart, Stack, Res).
 
-runtrace_opt(guard(Arg, C, ResumeData, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(guard(Arg, C, ResumeData, AbsHeap, L, Rest), Code, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Val),
     (Val == C ->
-        runtrace_opt(Rest, Labels, Functions, Env, Heap, TraceFromStart, Stack, Res)
+        runtrace_opt(Rest, Code, Env, Heap, TraceFromStart, Stack, Res)
     ;
         execute_fallback(ResumeData, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack),
-        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, InterpStack, Res)
+        interp_label(L, Code, InterpEnv, InterpHeap, InterpStack, Res)
     ).
 
-runtrace_opt(new(ResultVar, Class, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(new(ResultVar, Class, Rest), Code, Env, Heap, TraceFromStart, Stack, Res) :-
     new_object(Class, Heap, NHeap, NewObj),
     write_env(Env, ResultVar, NewObj, NEnv),
-    runtrace_opt(Rest, Labels, Functions, NEnv, NHeap, TraceFromStart, Stack, Res).
+    runtrace_opt(Rest, Code, NEnv, NHeap, TraceFromStart, Stack, Res).
 
-runtrace_opt(get(ResultVar, Arg, Field, Rest),  Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(get(ResultVar, Arg, Field, Rest), Code, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, RArg),
     get_object(RArg, Heap, Obj),
     get_field(Obj, Field, Value),
     write_env(Env, ResultVar, Value, NEnv),
-    runtrace_opt(Rest, Labels, Functions, NEnv, Heap, TraceFromStart, Stack, Res).
+    runtrace_opt(Rest, Code, NEnv, Heap, TraceFromStart, Stack, Res).
 
-runtrace_opt(set(Arg, Field, ValueArg, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(set(Arg, Field, ValueArg, Rest), Code, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Address),
     resolve(ValueArg, Env, Value),
     set_field(Address, Field, Value, Heap, NHeap),
-    runtrace_opt(Rest, Labels, Functions, Env, NHeap, TraceFromStart, Stack, Res).
+    runtrace_opt(Rest, Code, Env, NHeap, TraceFromStart, Stack, Res).
 
-runtrace_opt(guard_class(Arg, Class, ResumeData, AbsHeap, L, Rest), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(guard_class(Arg, Class, ResumeData, AbsHeap, L, Rest), Code, Env, Heap, TraceFromStart, Stack, Res) :-
     resolve(Arg, Env, Val),
     get_object(Val, Heap, obj(Class1, _)),
     (Class == Class1 ->
-        runtrace_opt(Rest, Labels, Functions, Env, Heap, TraceFromStart, Stack, Res)
+        runtrace_opt(Rest, Code, Env, Heap, TraceFromStart, Stack, Res)
     ;
         execute_fallback(ResumeData, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack),
-        interp_label(L, Labels, Functions, InterpEnv, InterpHeap, InterpStack, Res)
+        interp_label(L, Code, InterpEnv, InterpHeap, InterpStack, Res)
     ).
 
-runtrace_opt(loop(Renames), Labels, Functions, Env, Heap, TraceFromStart, Stack, Res) :-
+runtrace_opt(loop(Renames), Code, Env, Heap, TraceFromStart, Stack, Res) :-
     execute_phi(Renames, Env, NewEnv),
-    runtrace_opt(TraceFromStart, Labels, Functions, NewEnv, Heap, TraceFromStart, Stack, Res).
+    runtrace_opt(TraceFromStart, Code, NewEnv, Heap, TraceFromStart, Stack, Res).
 
 execute_fallback(resume(ResumeEnv, ResumeStack), Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, Stack) :-
     ensure(ResumeStack = []),
@@ -542,9 +552,9 @@ execute_phi([Var/Val | T], Env, [Var/NVal | T1]) :-
 
 % _______________ optimization _______________
 %
-% do_optimize(Trace, Labels, Functions, Env, OptimizedTrace) optimize a trace Trace, returning
+% do_optimize(Trace, Code, Env, OptimizedTrace) optimize a trace Trace, returning
 % OptimizedTrace
-do_optimize(Trace, Labels, Functions, Env, OptimizedTrace) :-
+do_optimize(Trace, Code, Env, OptimizedTrace) :-
     initialize_ssa_env(Env, SSAEnv, DefinedVars),
     optimize(Trace, SSAEnv, [], DefinedVars, [], OptimizedTrace).
 
@@ -576,11 +586,11 @@ optimize(op(ResultVar, Op, Arg1, Arg2, Rest), SSAEnv, AbsHeap, DefinedVars, Stac
     ),
     optimize(Rest, NEnv, AbsHeap, DefinedVars, Stack, RestTrace).
 
-optimize(enter(L, Labels, ResultVar, Renames, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
+optimize(enter(L, Code, ResultVar, Renames, Rest), SSAEnv, AbsHeap, DefinedVars, Stack, NewTrace) :-
     execute_phi(Renames, SSAEnv, NEnv),
-    optimize(Rest, NEnv, AbsHeap, DefinedVars, [frame(L, Labels, SSAEnv, ResultVar) | Stack], NewTrace).
+    optimize(Rest, NEnv, AbsHeap, DefinedVars, [frame(L, Code, SSAEnv, ResultVar) | Stack], NewTrace).
 
-optimize(return(Res, RestTrace), SSAEnv, AbsHeap, DefinedVars, [frame(L, Labels, TargetSSAEnv, ResVar)| Stack], NewTrace) :-
+optimize(return(Res, RestTrace), SSAEnv, AbsHeap, DefinedVars, [frame(L, Code, TargetSSAEnv, ResVar)| Stack], NewTrace) :-
     sresolve(Res, SSAEnv, RRes),
     write_env(TargetSSAEnv, ResVar, RRes, NEnv),
     optimize(RestTrace, NEnv, AbsHeap, DefinedVars, Stack, NewTrace).
@@ -954,7 +964,7 @@ run_boxedloop(X, Res) :-
 trace_boxedloop(X, Res) :-
     functions(Functions),
     lookup(boxedloop, Functions, func(_, _, Labels)),
-    do_trace(l, Labels, Functions,
+    do_trace(l, code(Labels, Functions),
              [startval/X, xval/3, i/i, x/x, const0/const0, const1/const1, const2/const2],
              [i/obj(int, [value/X]), x/obj(int, [value/3]),
                 const0/obj(int, [value/0]), const1/obj(int, [value/1]), const2/obj(int, [value/2])],
@@ -963,7 +973,6 @@ trace_boxedloop(X, Res) :-
 
 trace_callloop(I, X, Res) :-
     functions(Functions),
-    lookup(callloop, Functions, func(_, _, Labels)),
     do_trace(callloop, l, Functions, [i/I, x/X], Res).
 
 % bytecode interpreter
