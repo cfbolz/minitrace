@@ -578,7 +578,6 @@ execute_fallback(OState, IState, NIState) :-
     get_env(IState, Env),
     get_heap(IState, Heap),
     get_stack(IState, Stack),
-    trace,
     execute_fallback(SSAEnv, ResumeStack, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack),
     get_result(IState, Res),
     interp_state(InterpEnv, InterpHeap, InterpStack, Res, NIState).
@@ -694,7 +693,6 @@ optimize(return(Res, RestTrace), OState, NewTrace) :-
 optimize(loop, OState, Trace) :-
     get_stack(OState, Stack),
     ensure(Stack = []),
-    trace,
     get_definedvars(OState, DefinedVars),
     get_env(OState, SSAEnv),
     get_heap(OState, AbsHeap),
@@ -731,7 +729,6 @@ optimize(new(ResultVar, Class, Rest), OState, NewTrace) :-
 
 :- det(maybe_get_object/3).
 maybe_get_object(Address, OState, Res) :-
-    trace,
     get_heap(OState, AbsHeap),
     maybe_get_object_heap(Address, AbsHeap, Res).
 maybe_get_object_heap(_, [], not_virtual).
