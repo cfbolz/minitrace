@@ -45,12 +45,12 @@ lookup(X, [], _) :- throw(key_not_found(X)).
 lookup(Name, [Name/Value | _], Value) :- !.
 lookup(Name, [_ | Rest], Value) :- lookup(Name, Rest, Value).
 
-% write_env(Env, Var, Val, NEnv) set the binding of variable Var in an
+% write(Env, Var, Val, NEnv) set the binding of variable Var in an
 % environment Env to value Val and return a new environment NEnv.
-:- det(write_env/3).
-write_env([], X, V, [X/V]).
-write_env([Name/_ | Rest], Name, Value, [Name/Value | Rest]) :- !.
-write_env([Pair | Rest], Name, Value, [Pair | NewRest]) :- write_env(Rest, Name, Value, NewRest).
+:- det(store/4).
+store([], X, V, [X/V]).
+store([Name/_ | Rest], Name, Value, [Name/Value | Rest]) :- !.
+store([Pair | Rest], Name, Value, [Pair | NewRest]) :- store(Rest, Name, Value, NewRest).
 
 remove_from_env(_, [], []).
 remove_from_env(X, [X/_ | T], T) :- !.
@@ -62,7 +62,7 @@ remove_from_env(X, [A/B | T1], [A/B | T2]) :-
 % doing a lookup in the environment.
 :- det(resolve/3).
 resolve(const(X), _IState, X).
-resolve(var(X), IState, Y) :- 
+resolve(var(X), IState, Y) :-
     get_env(IState, Env),
     lookup(X, Env, Y).
 
@@ -226,6 +226,12 @@ get_stack(interpstate(_Env, _Heap, Stack, _Res), Stack).
 :- det(set_stack/3).
 set_stack(interpstate(Env, Heap, _Stack, Res), NStack, interpstate(Env, Heap, NStack, Res)).
 
+:- det(write_env/4).
+write_env(IState, Var, Value, NIState) :-
+    get_env(IState, Env),
+    store(Env, Var, Value, NEnv),
+    set_env(IState, NEnv, NIState).
+
 create_start_env([], [], []).
 create_start_env([Name|T1], [Val|T2], [Name/Val|T3]) :-
     create_start_env(T1, T2, T3).
@@ -276,7 +282,7 @@ interp_return([], Val, IState) :-
     print(Val), nl.
 
 interp_return([frame(L, Code, Env, ResultVar)| Stack], Val, IState) :-
-    write_env(Env, ResultVar, Val, NEnv),
+    store(Env, ResultVar, Val, NEnv),
     set_env(IState, NEnv, IState1),
     set_stack(IState1, Stack, NIState),
     interp_jump(L, Code, NIState).
@@ -291,9 +297,7 @@ interp(get(ResultVar, Arg, Field, NextOp), Code, IState) :-
     resolve(Arg, IState, RArg),
     get_object(RArg, IState, Obj),
     get_field(Obj, Field, Value),
-    get_env(IState, Env),
-    write_env(Env, ResultVar, Value, NEnv),
-    set_env(IState, NEnv, NIState),
+    write_env(IState, ResultVar, Value, NIState),
     interp(NextOp, Code, NIState).
 
 interp(set(Arg, Field, ValueArg, NextOp), Code, IState) :-
@@ -330,9 +334,7 @@ interp_op(ResultVar, Op, Arg1, Arg2, IState, NIState) :-
     resolve(Arg1, IState, RArg1),
     resolve(Arg2, IState, RArg2),
     do_op(Op, RArg1, RArg2, Res),
-    get_env(IState, Env),
-    write_env(Env, ResultVar, Res, NEnv),
-    set_env(IState, NEnv, NIState).
+    write_env(IState, ResultVar, Res, NIState).
 
 % heap manipulation
 
@@ -343,9 +345,7 @@ new_object(ResultVar, Class, IState, NIState) :-
     get_heap(IState, Heap),
     new_object_heap(Class, Heap, NHeap, NewObj),
     set_heap(IState, NHeap, IState1),
-    get_env(IState1, Env),
-    write_env(Env, ResultVar, NewObj, NEnv),
-    set_env(IState1, NEnv, NIState).
+    write_env(IState1, ResultVar, NewObj, NIState).
 
 get_object(Address, IState, Object) :-
     get_heap(IState, Heap),
@@ -357,8 +357,8 @@ get_field(obj(_, Fields), Field, Value) :-
 set_field(Address, Field, Value, IState, NIState) :-
     get_heap(IState, Heap),
     lookup(Address, Heap, obj(Cls, Fields)),
-    write_env(Fields, Field, Value, NFields),
-    write_env(Heap, Address, obj(Cls, NFields), NHeap),
+    store(Fields, Field, Value, NFields),
+    store(Heap, Address, obj(Cls, NFields), NHeap),
     set_heap(IState, NHeap, NIState).
 
 
@@ -435,9 +435,7 @@ trace(get(ResultVar, Arg, Field, NextOp), Code, IState, get(ResultVar, Arg, Fiel
     resolve(Arg, IState, RArg),
     get_object(RArg, IState, Obj),
     get_field(Obj, Field, Value),
-    get_env(IState, Env),
-    write_env(Env, ResultVar, Value, NEnv),
-    set_env(IState, NEnv, NIState),
+    write_env(IState, ResultVar, Value, NIState),
     trace(NextOp, Code, NIState, T, TState).
 
 trace(set(Arg, Field, ValueArg, NextOp), Code, IState, set(Arg, Field, ValueArg, T), TState) :-
@@ -497,7 +495,7 @@ trace_return([], Val, IState) :-
     print(Val), nl.
 
 trace_return([frame(L, Code, Env, ResultVar)|Stack], Val, IState, T, TState) :-
-    write_env(Env, ResultVar, Val, NEnv),
+    store(Env, ResultVar, Val, NEnv),
     set_env(IState, NEnv, IState1),
     set_stack(IState1, Stack, NIState),
     trace_jump(L, Code, NIState, T, TState).
@@ -543,9 +541,7 @@ runtrace_opt(get(ResultVar, Arg, Field, Rest), Code, IState, TraceFromStart) :-
     resolve(Arg, IState, RArg),
     get_object(RArg, IState, Obj),
     get_field(Obj, Field, Value),
-    get_env(IState, Env),
-    write_env(Env, ResultVar, Value, NEnv),
-    set_env(IState, NEnv, NIState),
+    write_env(IState, ResultVar, Value, NIState),
     runtrace_opt(Rest, Code, NIState, TraceFromStart).
 
 runtrace_opt(set(Arg, Field, ValueArg, Rest), Code, IState, TraceFromStart) :-
@@ -601,7 +597,7 @@ execute_escape(var(Var), Env, Env, AbsHeap, AbsHeap, Heap, Heap, Val) :-
 execute_escape(var(Var), Env, NEnv, AbsHeap, NAbsHeap, Heap, NHeap, NewObj) :-
     maybe_get_object_heap(Var, AbsHeap, obj(Cls, Fields)),
     new_object_heap(Cls, Heap, Heap1, NewObj),
-    write_env(Env, Var, NewObj, Env1),
+    store(Env, Var, NewObj, Env1),
     remove_from_env(Var, AbsHeap, AbsHeap1),
     execute_escape_fields(Fields, NewObj, Env1, NEnv, AbsHeap1, NAbsHeap, Heap1, NHeap).
 
@@ -670,9 +666,7 @@ optimize(op(ResultVar, Op, Arg1, Arg2, Rest), OState, NewTrace) :-
         Result = var(Res),
         NewTrace = op(Res, Op, RArg1, RArg2, RestTrace)
     ),
-    get_env(OState, SSAEnv),
-    write_env(SSAEnv, ResultVar, Result, NEnv),
-    set_env(OState, NEnv, NOState),
+    write_env(OState, ResultVar, Result, NOState),
     optimize(Rest, NOState, RestTrace).
 
 optimize(enter(L, Code, ResultVar, Renames, Rest), OState, NewTrace) :-
@@ -686,7 +680,7 @@ optimize(enter(L, Code, ResultVar, Renames, Rest), OState, NewTrace) :-
 optimize(return(Res, RestTrace), OState, NewTrace) :-
     get_stack(OState, [frame(_, _, TargetSSAEnv, ResVar)| Stack]),
     sresolve(Res, OState, RRes),
-    write_env(TargetSSAEnv, ResVar, RRes, NEnv),
+    store(TargetSSAEnv, ResVar, RRes, NEnv),
     set_env(OState, NEnv, OState1),
     set_stack(OState1, Stack, NOState),
     optimize(RestTrace, NOState, NewTrace).
@@ -714,10 +708,7 @@ optimize(guard(Arg, C, L, Rest), OState, NewTrace) :-
         NewTrace = RestTrace
     ;
         Arg = var(OrigVar),
-        Val = var(SSAVar),
-        get_env(OState, SSAEnv),
-        write_env(SSAEnv, OrigVar, const(C), NEnv),
-        set_env(OState, NEnv, NOState),
+        write_env(OState, OrigVar, const(C), NOState),
         NewTrace = guard(Val, C, OState, L, RestTrace)
     ),
     optimize(Rest, NOState, RestTrace).
@@ -728,9 +719,7 @@ optimize(new(ResultVar, Class, Rest), OState, NewTrace) :-
     get_heap(OState, AbsHeap),
     new_object_heap(Class, AbsHeap, NHeap, NewObj),
     set_heap(OState, NHeap, OState1),
-    get_env(OState1, SSAEnv),
-    write_env(SSAEnv, ResultVar, var(NewObj), NEnv),
-    set_env(OState1, NEnv, NOState),
+    write_env(OState1, ResultVar, var(NewObj), NOState),
     optimize(Rest, NOState, NewTrace).
 
 :- det(maybe_get_object/3).
@@ -754,9 +743,7 @@ optimize(get(ResultVar, Arg, Field, Rest), OState, NewTrace) :-
         Value = var(Res),
         NewTrace = get(Res, RArg, Field, RestTrace)
     ),
-    get_env(OState, SSAEnv),
-    write_env(SSAEnv, ResultVar, Value, NEnv),
-    set_env(OState, NEnv, NOState),
+    write_env(OState, ResultVar, Value, NOState),
     optimize(Rest, NOState, RestTrace).
 
 optimize(set(Arg, Field, ValueArg, Rest), OState, NewTrace) :-
