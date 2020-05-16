@@ -213,6 +213,7 @@ interp_state(Env, Heap, Stack, Res, interpstate(Env, Heap, Stack, Res)).
 :- det(get_result/2).
 get_result(interpstate(_Env, _Heap, _Stack, Res), Res).
 :- det(get_env/2).
+:- discontiguous get_env/2.
 get_env(interpstate(Env, _Heap, _Stack, _Res), Env).
 :- det(set_result/3).
 set_env(interpstate(_Env, Heap, Stack, Res), NEnv, interpstate(NEnv, Heap, Stack, Res)).
@@ -724,7 +725,12 @@ optimize(guard(Arg, C, L, Rest), OState, NewTrace) :-
 % abstract heap maps SSAVar -> obj(Cls, Fields)
 % Fields are var(SSAVar) or const(...)
 optimize(new(ResultVar, Class, Rest), OState, NewTrace) :-
-    new_object(ResultVar, Class, OState, NOState),
+    get_heap(OState, AbsHeap),
+    new_object_heap(Class, AbsHeap, NHeap, NewObj),
+    set_heap(OState, NHeap, OState1),
+    get_env(OState1, SSAEnv),
+    write_env(SSAEnv, ResultVar, var(NewObj), NEnv),
+    set_env(OState1, NEnv, NOState),
     optimize(Rest, NOState, NewTrace).
 
 :- det(maybe_get_object/3).
@@ -735,7 +741,7 @@ maybe_get_object_heap(_, [], not_virtual).
 maybe_get_object_heap(Address, [Address/Value | _], Res) :- !, Res = Value.
 maybe_get_object_heap(Address, [_ | Rest], Value) :- maybe_get_object_heap(Address, Rest, Value).
 
-optimize(get(Var, Arg, Field, Rest), OState, NewTrace) :-
+optimize(get(ResultVar, Arg, Field, Rest), OState, NewTrace) :-
     sresolve(Arg, OState, RArg),
     ensure(RArg = var(Address)),
     maybe_get_object(Address, OState, Obj),
@@ -744,12 +750,12 @@ optimize(get(Var, Arg, Field, Rest), OState, NewTrace) :-
         NewTrace = RestTrace
     ;
         ensure(Obj == not_virtual),
-        invent_new_var(Var, Res),
+        invent_new_var(ResultVar, Res),
         Value = var(Res),
         NewTrace = get(Res, RArg, Field, RestTrace)
     ),
     get_env(OState, SSAEnv),
-    write_env(SSAEnv, ResultVar, Result, NEnv),
+    write_env(SSAEnv, ResultVar, Value, NEnv),
     set_env(OState, NEnv, NOState),
     optimize(Rest, NOState, RestTrace).
 
@@ -770,7 +776,7 @@ optimize(set(Arg, Field, ValueArg, Rest), OState, NewTrace) :-
     optimize(Rest, NOState, RestTrace).
 
 optimize(guard_class(Arg, Class, L, Rest), OState, NewTrace) :-
-    sresolve(Arg, SSAEnv, RArg),
+    sresolve(Arg, OState, RArg),
     ensure(RArg = var(Address)),
     maybe_get_object(Address, OState, Obj),
     (Obj = obj(Class1, _), Class = Class1 ->
@@ -778,10 +784,11 @@ optimize(guard_class(Arg, Class, L, Rest), OState, NewTrace) :-
         NewTrace = RestTrace
     ;
         get_heap(OState, AbsHeap),
-        escape(RValueArg, AbsHeap, NHeap, NewTrace, NewTrace2),
-        NewTrace2 = guard_class(RArg, Class, OState, L, RestTrace)
+        escape(RArg, AbsHeap, NHeap, NewTrace, NewTrace2),
+        set_heap(OState, NHeap, NOState),
+        NewTrace2 = guard_class(RArg, Class, NOState, L, RestTrace)
     ),
-    optimize(Rest, OState, RestTrace).
+    optimize(Rest, NOState, RestTrace).
 
 escape(const(_), Heap, Heap, Trace, Trace) :- !.
 escape(var(X), AbsHeap, NHeap, Trace, NewTrace) :-
@@ -1117,7 +1124,6 @@ loop(X, Res) :-
 
 trace_loop(X, Res) :-
     functions(Functions),
-    trace,
     do_trace(loop, l, Functions, [i/X, x/3], Res).
 
 
