@@ -566,8 +566,6 @@ runtrace_opt(loop(Renames), IState, TraceFromStart) :-
     runtrace_opt(TraceFromStart, NIState, TraceFromStart).
 
 execute_fallback(OState, IState, NIState) :-
-    write(OState), nl,
-    write(IState), nl,
     get_env(OState, SSAEnv),
     get_stack(OState, ResumeStack),
     get_heap(OState, AbsHeap),
@@ -579,7 +577,6 @@ execute_fallback(OState, IState, NIState) :-
     interp_state(InterpEnv, InterpHeap, InterpStack, Res, NIState).
 
 execute_fallback(ResumeEnv, ResumeStack, Env, AbsHeap, InterpEnv, Heap, InterpHeap, Stack, InterpStack) :-
-    write(ResumeEnv), nl,
     execute_fallback(ResumeEnv, Env, NEnv, AbsHeap, NAbsHeap, InterpEnv, Heap, Heap1),
     execute_fallback_rebuild_stack(ResumeStack, Stack, InterpStack, NEnv, NAbsHeap, Heap1, InterpHeap).
 
