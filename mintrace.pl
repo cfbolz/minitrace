@@ -475,6 +475,8 @@ trace(call(ResultVar, FuncName, Args, L), Code, IState,
     create_start_env(ArgNames, Args, Mapping),
     trace_jump(Label, NCode, NIState, [enter(L, Code, ResultVar, Mapping)|T], TState).
 
+:- dynamic lasttrace/1.
+
 trace_jump(L, _Code, IState, T, tstate(L)) :-
     reverse([loop | T], FullTrace),
     !, % prevent more tracing
@@ -483,6 +485,8 @@ trace_jump(L, _Code, IState, T, tstate(L)) :-
     get_env(IState, Env),
     do_optimize(FullTrace, Env, RevOptTrace),
     reverse(RevOptTrace, OptTrace),
+    retractall(lasttrace(_)),
+    assert(lasttrace(OptTrace)),
     write(opttrace), nl, write_trace(OptTrace), nl, % --
     runtrace_opt(OptTrace, IState, OptTrace).
 
@@ -519,6 +523,14 @@ write_trace_op(guard_class(V, Val, _, L, _)) :-
 write_trace_op(enter(L, _, V, M)) :-
     write(enter(L, V, M)), !.
 write_trace_op(Op) :- write(Op).
+
+summarize_trace([], In, In).
+summarize_trace([Op | R], In, Out) :-
+    Op =.. [Opname | _],
+    catch(lookup(Opname, In, Num), key_not_found(_), Num = 0),
+    Num1 is Num + 1,
+    store(In, Opname, Num1, In1),
+    summarize_trace(R, In1, Out).
 
 
 
@@ -798,12 +810,25 @@ optimize([guard_class(Arg, Class, L, Code) | Rest], OState, Trace, FullTrace) :-
         NOState = OState,
         NewTrace = Trace
     ;
-        get_heap(OState, AbsHeap),
-        escape(RArg, AbsHeap, NHeap, Trace, Trace2),
-        set_heap(OState, NHeap, NOState),
-        NewTrace = [guard_class(RArg, Class, NOState, L, Code) | Trace2]
+        (find_guard_class(Trace, RArg, Class) ->
+            NOState = OState,
+            NewTrace = Trace
+        ;
+            get_heap(OState, AbsHeap),
+            escape(RArg, AbsHeap, NHeap, Trace, Trace2),
+            set_heap(OState, NHeap, NOState),
+            NewTrace = [guard_class(RArg, Class, NOState, L, Code) | Trace2]
+        )
     ),
     optimize(Rest, NOState, NewTrace, FullTrace).
+
+find_guard_class([TOp | T], Arg, Class) :-
+    (TOp = guard_class(Arg, Class, _, _, _) ->
+        true
+    ;
+        find_guard_class(T, Arg, Clas)
+    ).
+
 
 escape(const(_), Heap, Heap, Trace, Trace) :- !.
 escape(var(X), AbsHeap, NHeap, Trace, NewTrace) :-
@@ -928,7 +953,10 @@ boxedloop/func([startval, xval], loop, [
     b/
         call(x2, mul, [var(x), var(const2)], b_add),
     b_add/
-        call(x2, add, [var(x), var(const1)], b_sub),
+        call(x2, add, [var(x), var(const1)], b_add0),
+    b_add0/
+        % a useless + 0, maybe we can optimize it away
+        call(x2, add, [var(x2), var(const0)], b_sub),
     b_sub/
         call(i, sub, [var(i), var(x2)], l),
     error/
@@ -1169,7 +1197,10 @@ redundantloop(X, Res) :-
 
 trace_redundantloop(X, Res) :-
     functions(Functions),
-    do_trace(redundantloop, l, Functions, [i/X, x/3, res/0], Res).
+    do_trace(redundantloop, l, Functions, [i/X, x/3, res/0], Res),
+    lasttrace(T),
+    summarize_trace(T, [], S),
+    lookup(op, S, N), N == 3.
 
 
 run_interp(A, Res) :-
@@ -1331,7 +1362,10 @@ test(trace_callloop, true(Res = -10)) :-
     trace_callloop(100, 5, Res).
 
 test(trace_boxedloop, true(Res = -4)) :-
-    trace_boxedloop(100, Res).
+    trace_boxedloop(100, Res),
+    lasttrace(T),
+    summarize_trace(T, [], S),
+    lookup(guard_class, S, 5).
 
 test(trace_power, true(Res = 1024)) :-
      trace_power(2, 10, Res).
