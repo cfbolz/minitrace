@@ -478,12 +478,12 @@ trace(call(ResultVar, FuncName, Args, L), Code, IState,
 trace_jump(L, _Code, IState, T, tstate(L)) :-
     reverse([loop | T], FullTrace),
     !, % prevent more tracing
-    write(trace), nl, write(FullTrace), nl, % --
+    write(trace), nl, write_trace(FullTrace), nl, % --
     %check_syntax_trace(FullTrace, Labels),
     get_env(IState, Env),
     do_optimize(FullTrace, Env, RevOptTrace),
     reverse(RevOptTrace, OptTrace),
-    write(opttrace), nl, write(OptTrace), nl, % --
+    write(opttrace), nl, write_trace(OptTrace), nl, % --
     runtrace_opt(OptTrace, IState, OptTrace).
 
 trace_jump(L, Code, IState, T, TState) :-
@@ -502,14 +502,23 @@ trace_return([frame(L, Code, Env, ResultVar)|Stack], Val, IState, T, TState) :-
 
 
 % write_trace(Trace) print trace Trace in a readable way
-write_trace(loop) :- !, write('  loop'), nl.
-write_trace(loop(V)) :- !, write('  loop'), write(V), nl.
-write_trace(Op) :-
-    Op =.. L,
-    append(L0, [NextOp], L),
-    SOp =.. L0,
-    write('  '), write(SOp), nl,
-    write_trace(NextOp).
+:- det(write_trace/1).
+write_trace([]).
+write_trace([Op | T]) :-
+    write_trace_op(Op), nl,
+    write_trace(T).
+
+write_trace_op(guard(V, Val, L, _)) :-
+    write(guard(V, Val, L)), !.
+write_trace_op(guard(V, Val, _, L, _)) :-
+    write(guard(V, Val, L)), !.
+write_trace_op(guard_class(V, Val, L, _)) :-
+    write(guard_class(V, Val, L)), !.
+write_trace_op(guard_class(V, Val, _, L, _)) :-
+    write(guard_class(V, Val, L)), !.
+write_trace_op(enter(L, _, V, M)) :-
+    write(enter(L, V, M)), !.
+write_trace_op(Op) :- write(Op).
 
 
 
@@ -667,10 +676,10 @@ optimize([op(ResultVar, Op, Arg1, Arg2) | Rest], OState, Trace, FullTrace) :-
         Result = const(Res),
         NewTrace = Trace
     ;
-        (find_op(Op, Arg1, Arg2, FullTrace, ResVar) ->
+        (find_op(Trace, Op, RArg1, RArg2, ResVar) ->
             % op is redundant!
             Result = var(ResVar),
-            NewTrace = RestTrace
+            NewTrace = Trace
         ;
             invent_new_var(ResultVar, SSAVar),
             Result = var(SSAVar),
@@ -680,7 +689,12 @@ optimize([op(ResultVar, Op, Arg1, Arg2) | Rest], OState, Trace, FullTrace) :-
     write_env(OState, ResultVar, Result, NOState),
     optimize(Rest, NOState, NewTrace, FullTrace).
 
-find_op(Op, A1, A2, FullTrace, ResVar) :- fail.
+find_op([TOp | T], Op, A1, A2, ResVar) :-
+    (TOp = op(ResVar, Op, A1, A2) ->
+        true
+    ;
+        find_op(T, Op, A1, A2, ResVar)
+    ).
 
 optimize([enter(L, Code, ResultVar, Renames) | Rest], OState, NewTrace, FullTrace) :-
     get_env(OState, SSAEnv),
