@@ -1,5 +1,246 @@
 import pytest
+import re
 from dataclasses import dataclass
+
+# In this blog post I want to show the complete code (in Python3) of how a very
+# simple optimizer for sequences of operations can work. These algorithms could
+# be part of a (really simple) compiler, or a JIT.
+
+# https://en.wikipedia.org/wiki/Intermediate_representation
+
+# https://en.wikipedia.org/wiki/Static_single-assignment_form
+
+# The first thing we need to do is define how our operations are stored. The
+# format that a compiler uses to store the program while it is being optimized
+# is usually called an "intermediate representation" (IR). Many production
+# compilers use IRs that are in the Static Single-Assignment Form (SSA). SSA
+# form has the property that every variable is assigned to exactly once, and
+# every variable is defined before it is used. This simplifies many things.
+
+# Let's make this concrete. If our input program is a complex expressions, such
+# as a * (b + 17) + (b + 17) the intermediate representation of that (or at
+# least its text representation) would maybe be something like:
+
+# var1 = add(b, 17)
+# var2 = mul(a, var1)
+# var3 = add(b, 17)
+# var4 = add(var2, var3)
+
+# This sequence of instructions is inefficient! The operation add(b, 17) is
+# computed twice and we can save time by calling it only once. In this post I
+# want to show an optimizer that can do this (and some related) optimizations.
+
+# I will not at all talk about the process of translating the input program
+# into the IR. Instead, I will assume we have some component that does this
+# translation already. The tests in this blog post will construct small
+# snippets of IR by hand.
+
+# Looking at the IR we notice that the input expression has been linearized
+# into a sequence of operations, and all the intermedia results have been given
+# unique variable names. The value that every variable is assigned is computed
+# by some operation, which consist of an operand and an arbitrary number of
+# arguments. The arguments of an operation are either themselves variables or
+# constants.
+
+# Section 1 the IR
+
+# Let's start modelling some of this with Python classes. First we define a
+# base class of all values that can be used as arguments in operations, and
+# let's also add a class that represents constants:
+
+# https://en.wikipedia.org/wiki/Control-flow_graph
+
+class Value:
+    pass
+
+
+@dataclass(eq=False)
+class Constant(Value):
+    value : object
+
+
+# One consequence of the fact that every variable is assigned to only once is
+# that a variable is in a one-to-one correspondence with the right-hand-side of
+# its unique assignment. That means that we don't need a class that represents
+# variables at all. Instead, it's sufficient to have a class that represents an
+# operation, and that is the same as the variable that it defines:
+
+@dataclass(eq=False)
+class Operation(Value):
+    name : str
+    args : list
+
+    def getarg(self, index):
+        return self.args[index]
+
+# Now we can instantiate these two classes to represent the example sequence of
+# operations above:
+
+def test_construct_example():
+    # first we need something to represent "b". In our limited view, we don't
+    # know where it comes from, so we will define it with a pseudo-operation
+    # called "getarg" which takes a number n as an argument and returns the
+    # n-th input argument
+
+    a = Operation("getarg", [Constant(0)])
+    b = Operation("getarg", [Constant(1)])
+    # var1 = add(b, 17)
+    var1 = Operation("add", [b, Constant(17)])
+    # var2 = mul(a, var1)
+    var2 = Operation("mul", [a, var1])
+    # var3 = add(b, 17)
+    var3 = Operation("add", [b, Constant(17)])
+    # var4 = add(var2, var3)
+    var4 = Operation("add", [var2, var3])
+
+    sequence = [a, b, var1, var2, var3, var4]
+    # nothing to test really, it shouldn't crash
+
+
+# Usually, complicated programs are represented as a control flow graph in a
+# compiler, which represents all the possible paths that control can take while
+# executing the program. Every node in the control flow graph is a basic block.
+# A basic block is a linear sequence of operations with no control flow inside
+# of it.
+
+# https://en.wikipedia.org/wiki/Basic_block
+
+# When optimizing a program, a compiler usually looks at the whole control flow
+# graph of a function. However, that is still too complicated! So let's
+# simplify further and look at only at optimizations we can do when looking at
+# a single basic block and its sequence of instructions.
+
+# But let's define a class representing basic blocks first and let's also add
+# some convenience functions for constructing sequences of operations, because
+# the code in test_construct_example is a bit annoying.
+
+class Block(list):
+    def __getattr__(self, opname):
+        # this looks a bit complicated! You can ignore the implementation and
+        # just look at the test below to see an example of how to use it.
+        # the main idea is that we cann just call any operation name on the
+        # Block as a method and pass arguments to it and it will get
+        # automatically get added to the basic block
+        def wraparg(arg):
+            if not isinstance(arg, Value):
+                arg = Constant(arg)
+            return arg
+        def make_op(*args):
+            # construct an Operation, wrap the arguments in Constants if
+            # necessary
+            op = Operation(opname, [wraparg(arg) for arg in args])
+            # add it to self, the basic block
+            self.append(op)
+            return op
+        return make_op
+
+def test_convencience_block_construction():
+    bb = Block()
+    # a and b again with getarg
+    a = bb.getarg(0)
+    assert len(bb) == 1
+    assert bb[0].name == "getarg"
+    assert bb[0].args[0].value == 0 # it's a Constant
+
+    b = bb.getarg(1)
+    # var1 = add(b, 17)
+    var1 = bb.add(b, 17)
+    # var2 = mul(a, var1)
+    var2 = bb.mul(a, var1)
+    # var3 = add(b, 17)
+    var3 = bb.add(b, 17)
+    # var4 = add(var2, var3)
+    var4 = bb.add(var2, var3)
+    import pprint
+    pprint.pprint(list(bb))
+    assert len(bb) == 6
+
+# That's a good bit of infrastructure to make the tests easy to write. One
+# thing we are lacking though is a way to print the basic blocks into a nicely
+# readable textual representation. Because in the current form, the repr of a
+# Block is very annoying, the output of pprint-ing bb in test above looks like
+# this:
+
+[Operation(name='getarg', args=[Constant(value=0)]),
+ Operation(name='getarg', args=[Constant(value=1)]),
+ Operation(name='add',
+           args=[Operation(name='getarg', args=[Constant(value=1)]),
+                 Constant(value=17)]),
+ Operation(name='mul',
+           args=[Operation(name='getarg', args=[Constant(value=0)]),
+                 Operation(name='add',
+                           args=[Operation(name='getarg',
+                                           args=[Constant(value=1)]),
+                                 Constant(value=17)])]),
+ Operation(name='add',
+           args=[Operation(name='getarg', args=[Constant(value=1)]),
+                 Constant(value=17)]),
+ Operation(name='add',
+           args=[Operation(name='mul',
+                           args=[Operation(name='getarg',
+                                           args=[Constant(value=0)]),
+                                 Operation(name='add',
+                                           args=[Operation(name='getarg',
+                                                           args=[Constant(value=1)]),
+                                                 Constant(value=17)])]),
+                 Operation(name='add',
+                           args=[Operation(name='getarg',
+                                           args=[Constant(value=1)]),
+                                 Constant(value=17)])])]
+
+# It's basically impossible to see what is going on here, because there the
+# Operations in the basic block appear several times, once as elements of the
+# list but then also as arguments to operations further down in the list. so
+# let's write some code that turns things back into a readable textual
+# representation, so we have a chance to debug.
+
+def basicblock_to_str(l : list[Operation], varprefix : str = "var", extra_info=None):
+    # the implementation is not too important, look at the test below to see
+    # what the result looks like
+
+    def arg_to_str(arg : Value):
+        if isinstance(arg, Constant):
+            return str(arg.value)
+        else:
+            # the key must exist, otherwise it's not a valid SSA basic block:
+            # the variable must be defined before use
+            return varnames[arg]
+
+    varnames = {}
+    res = []
+    for op in l:
+        # give the operation a name used while printing:
+        varname = varnames[op] = f"{varprefix}{len(varnames)}"
+        arguments = ", ".join(arg_to_str(op.getarg(i)) for i in range(op.numargs))
+        strop = f"{varname} = {op.name}({arguments})"
+
+        # ignore this mechanism for now, used much later. for now, extra_info
+        # is always None
+        if extra_info is not None and (extra := extra_info(op)) is not None:
+            strop += f" # {extra}"
+        res.append(strop)
+    return "\n".join(res)
+
+def test_basicblock_to_str():
+    # the basic block would usually start with phi nodes, I am not
+    # modelling that in this small sketch. let's use a pseudo-operation
+    # 'getarg' for variables that flow into the block
+
+    bb = Block()
+    var0 = getarg(0)
+    var1 = bb.add(5, 4)
+    var2 = bb.add(var1, var0)
+
+    bb = [var0, var1, var2]
+    assert basicblock_to_str(bb) == """\
+var0 = getarg(0)
+var1 = add(5, 4)
+var2 = add(var1, var0)"""
+
+    assert basicblock_to_str(bb, "x") == """\
+x0 = getarg(0)
+x1 = add(5, 4)
+x2 = add(x1, x0)"""
 
 # the idea of this file is to show how a union-find data structure can be used
 # in an extremely simple local forward optimization pass. that pass will go
@@ -17,8 +258,6 @@ from dataclasses import dataclass
 # operation that has to be emitted into the optimized basic block, or sometimes
 # even a constant.
 
-
-
 # let's start with the IR:
 
 # the following classes represent the operations in our mini IR: Operations
@@ -34,7 +273,7 @@ class Operation(Value):
     args : list
     forwarded : Value = None
 
-    info = None # needed in the last section below, can be ignored for now
+    info = None
 
     def find(self) -> Value:
         # returns the "representative" value of self, in the union-find sense
@@ -62,6 +301,47 @@ class Constant(Value):
     def find(self):
         return self
 
+def parse(lines):
+    bb = []
+    names = {}
+    for line in lines.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        varname = None
+        if "=" in line:
+            varname, line = line.split("=", 1)
+            varname = varname.strip()
+        paren_pos = line.find('(')
+        assert paren_pos >= 1
+        opname = line[:paren_pos].strip()
+        assert line[-1] == ')'
+        line = line[paren_pos + 1:-1] # cut of parens
+        opargs = []
+        for arg in line.split(','):
+            arg = arg.strip()
+            if arg in names:
+                oparg = names[arg]
+            else:
+                oparg = Constant(int(arg))
+            opargs.append(oparg)
+        op = Operation(opname, opargs, varname)
+        bb.append(op)
+        if varname:
+            assert varname not in names
+            names[varname] = op
+    return bb
+
+def eq_basic_block(bb1, bb2):
+    return basicblock_to_str(bb1) == basicblock_to_str(bb2)
+
+def test_parse():
+    s = """\
+var0 = getarg(0)
+var1 = add(5, 4)
+var2 = add(var1, var0)"""
+    bb = parse(s)
+    assert basicblock_to_str(bb) == s
 
 
 # helper function for construction Operation instances that wrap the arguments
@@ -89,9 +369,10 @@ lshift = opbuilder("lshift")
 
 def test_union_find():
     # construct three operation, and unify them step by step
-    a1 = dummy(1)
-    a2 = dummy(2)
-    a3 = dummy(3)
+    bb = Block()
+    a1 = bb.dummy(1)
+    a2 = bb.dummy(2)
+    a3 = bb.dummy(3)
     assert a1.find() is a1
     assert a2.find() is a2
     assert a3.find() is a3
@@ -154,9 +435,10 @@ def test_basicblock_to_str():
     # modelling that in this small sketch. let's use a pseudo-operation
     # 'getarg' for variables that flow into the block
 
+    bb = Block()
     var0 = getarg(0)
-    var1 = add(5, 4)
-    var2 = add(var1, var0)
+    var1 = bb.add(5, 4)
+    var2 = bb.add(var1, var0)
 
     bb = [var0, var1, var2]
     assert basicblock_to_str(bb) == """\
@@ -220,9 +502,10 @@ def constfold_buggy(bb: list[Operation]) -> list[Operation]:
 def test_constfold_simple():
     # reuse the simple example from the last test, this time do the
     # optimization for real
+    bb = Block()
     var0 = getarg(0)
-    var1 = add(5, 4)
-    var2 = add(var1, var0)
+    var1 = bb.add(5, 4)
+    var2 = bb.add(var1, var0)
 
     bb = [var0, var1, var2]
     opt_bb = constfold_buggy(bb)
@@ -235,10 +518,11 @@ def test_constfold_buggy_limitation():
     # this test fails! it shows the problem with the above simple
     # constfold_buggy pass
 
+    bb = Block()
     var0 = getarg(0)
-    var1 = add(5, 4) # this is folded
-    var2 = add(var1, 10) # we want this folded too, but it doesn't work
-    var3 = add(var2, var0)
+    var1 = bb.add(5, 4) # this is folded
+    var2 = bb.add(var1, 10) # we want this folded too, but it doesn't work
+    var3 = bb.add(var2, var0)
 
     bb = [var0, var1, var2, var3]
     opt_bb = constfold_buggy(bb)
@@ -284,10 +568,11 @@ def constfold(bb: list[Operation]) -> list[Operation]:
 
 def test_constfold_two_ops():
     # now it works!
+    bb = Block()
     var0 = getarg(0)
-    var1 = add(5, 4)
-    var2 = add(var1, 10)
-    var3 = add(var2, var0)
+    var1 = bb.add(5, 4)
+    var2 = bb.add(var1, 10)
+    var3 = bb.add(var2, var0)
 
     bb = [var0, var1, var2, var3]
     opt_bb = constfold(bb)
@@ -353,15 +638,15 @@ def find_prev_add_op(arg0 : Value, arg1 : Value, opt_bb : list[Operation]) -> Op
 
 
 def test_cse():
-    var0 = getarg(0)
-    var1 = getarg(1)
-    var2 = add(var0, var1)
-    var3 = add(var0, var1) # the same as var3
-    var4 = add(var2, 2)
-    var5 = add(var3, 2) # the same as var4
-    var6 = add(var4, var5)
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.getarg(1)
+    var2 = bb.add(var0, var1)
+    var3 = bb.add(var0, var1) # the same as var3
+    var4 = bb.add(var2, 2)
+    var5 = bb.add(var3, 2) # the same as var4
+    var6 = bb.add(var4, var5)
 
-    bb = [var0, var1, var2, var3, var4, var5, var6]
     opt_bb = cse(bb)
     assert basicblock_to_str(opt_bb, "optvar") == """\
 optvar0 = getarg(0)
@@ -393,6 +678,7 @@ def strength_reduce(bb: list[Operation]) -> list[Operation]:
     return opt_bb
 
 def test_strength_reduce():
+    bb = Block()
     var0 = getarg(0)
     var1 = add(var0, var0)
 
@@ -448,6 +734,7 @@ def optimize_prelim(bb: list[Operation]) -> list[Operation]:
 # some tests for the preliminary combined optimizer:
 
 def test_single_pass_prelim():
+    bb = Block()
     # constant folding
     var0 = getarg(0)
     var1 = add(5, 4)
@@ -461,6 +748,7 @@ optvar0 = getarg(0)
 optvar1 = add(19, optvar0)"""
 
     # cse + strength reduction
+    bb = Block()
     var0 = getarg(0)
     var1 = getarg(1)
     var2 = add(var0, var1)
@@ -479,6 +767,7 @@ optvar3 = add(optvar2, 2)
 optvar4 = lshift(optvar3, 1)"""
 
     # removing + 0
+    bb = Block()
     var0 = getarg(0)
     var1 = add(16, -16)
     var2 = add(var0, var1)
@@ -521,7 +810,7 @@ PARITY_UNKNOWN = "unknown"
 
 @dataclass
 class IntegerInfo:
-    parity : int
+    parity : str
 
 
 # We could like to attach an instance of IntegerInfo to an equivalence class of
@@ -594,6 +883,7 @@ def print_extra_info_parity(op):
 
 def test_analyze_parity():
     # let's try this on some operations!
+    bb = Block()
     var0 = getarg(0)
     var1 = getarg(1)
     var2 = lshift(var0, 1) # known even
@@ -649,6 +939,7 @@ def optimize_with_parity(bb : list[Operation]) -> list[Operation]:
 
 
 def test_optimize_with_parity():
+    bb = Block()
     var0 = getarg(0)
     var1 = getarg(1)
     var2 = lshift(var0, 1) # known even
@@ -714,6 +1005,7 @@ def dce(bb : list[Operation], results : set[Operation]):
     return list(reversed(opt_bb))
 
 def test_dead_code_elimination():
+    bb = Block()
     var0 = getarg(0)
     var1 = getarg(1)
     var2 = lshift(var0, 1)
@@ -827,6 +1119,7 @@ def test_single_pass_final():
     # want to keep
 
     # constant folding
+    bb = Block()
     var0 = getarg(0)
     var1 = add(5, 4)
     var2 = add(var1, 10)
@@ -839,6 +1132,7 @@ optvar0 = getarg(0)
 optvar1 = add(19, optvar0)"""
 
     # cse + strength reduction
+    bb = Block()
     var0 = getarg(0)
     var1 = getarg(1)
     var2 = add(var0, var1)
@@ -857,6 +1151,7 @@ optvar3 = add(optvar2, 2)
 optvar4 = lshift(optvar3, 1)"""
 
     # removing + 0
+    bb = Block()
     var0 = getarg(0)
     var1 = add(16, -16)
     var2 = add(var0, var1)
@@ -870,6 +1165,7 @@ optvar0 = getarg(0)
 optvar1 = lshift(optvar0, 1)"""
 
     # parity optimizations
+    bb = Block()
     var0 = getarg(0)
     var1 = getarg(1)
     var2 = lshift(var0, 1) # known even
