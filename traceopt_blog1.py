@@ -705,15 +705,19 @@ optvar1 = lshift(optvar0, 1)"""
 
 # That's it for now. Why is this architecture cool? From a software engineering
 # point of view, sticking everything into a single function like in
-# optimize_forward above is obviously not great, and if you wanted to do this
+# optimize_xxxxxxxxxxxxxxxxxxxxxxx above is obviously not great, and if you wanted to do this
 # for real you would try to split the cases into different functions that are
 # individually digestible, or even use a DSL that makes the pattern matching
 # much more readable. But the advantage of the architecture is that it's quite
-# efficient, packing a lot of good optimizations into two passes over every
-# basic block.
+# efficient, it makes it possible to pack a lot of good optimizations into a
+# single pass over a basic block.
 
 # Of course this works even better if you are in a tracing context, where
 # everything is put into a trace, which is basically one incredibly long basic
 # block. And indeed this is exactly the architecture that PyPy's JIT optimizer
-# uses.
+# uses. In a JIT context it's also quite important that the optimizer itself
+# runs quickly.
+
+# Various other optimizations are possible in this model. I plan to write a
+# follow-up post that shows PyPy's most important optimization.
 
