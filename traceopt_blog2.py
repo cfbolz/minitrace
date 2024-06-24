@@ -6,7 +6,7 @@ from typing import Optional, Any
 
 class Value:
     def find(self):
-        raise NotImplementedError("abstract base class")
+        raise NotImplementedError("abstract")
 
 @dataclass(eq=False)
 class Operation(Value):
@@ -54,18 +54,10 @@ class Block(list):
         return make_op
 
 def bb_to_str(l : Block, varprefix : str = "var"):
-    # the implementation is not too important,
-    # look at the test below to see what the
-    # result looks like
-
     def arg_to_str(arg : Value):
         if isinstance(arg, Constant):
             return str(arg.value)
         else:
-            # the key must exist, otherwise it's
-            # not a valid SSA basic block:
-            # the variable must be defined before
-            # its first use
             return varnames[arg]
 
     varnames = {}
@@ -164,30 +156,37 @@ def optimize_alloc_removal_1(bb):
         opt_bb.append(op)
     return opt_bb
 
-
-def test_alloc_removal_1():
+def example1(optimize):
     # remove unused allocations
     bb = Block()
     var0 = bb.getarg(0)
     ls = bb.alloc()
     sto = bb.store(ls, 0, var0)
     var1 = bb.load(ls, 0)
-    opt_bb = optimize_alloc_removal_1(bb)
+    opt_bb = optimize(bb)
     assert bb_to_str(opt_bb, "optvar") == """\
 optvar0 = getarg(0)"""
 
-@pytest.mark.xfail
-def test_alloc_removal_1_fail():
+def test_alloc_removal_1():
+    example1(optimize_alloc_removal_1)
+
+
+def example2(optimize):
     # keep around allocations that escape
     bb = Block()
     var0 = bb.getarg(0)
     ls = bb.alloc()
     sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_1(bb)
+    opt_bb = optimize(bb)
     assert bb_to_str(opt_bb, "optvar") == """\
 optvar0 = getarg(0)
 optvar1 = alloc()
 optvar2 = store(optvar0, 0, optvar1)"""
+
+@pytest.mark.xfail
+def test_alloc_removal_1_fail():
+    example2(optimize_alloc_removal_1)
+
 
 # version 2
 
@@ -197,7 +196,7 @@ def materialize_2(opt_bb, value: Operation) -> None:
     info = value.info
     assert info
     assert value.name == "alloc"
-    # but the alloc operation back into the trace
+    # put the alloc operation back into the trace
     opt_bb.append(value)
 
 def optimize_alloc_removal_2(bb):
@@ -224,41 +223,26 @@ def optimize_alloc_removal_2(bb):
 
 
 def test_alloc_removal_2():
-    # remove unused allocations
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(ls, 0, var0)
-    var1 = bb.load(ls, 0)
-    opt_bb = optimize_alloc_removal_2(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)"""
+    example1(optimize_alloc_removal_2)
+    example2(optimize_alloc_removal_2)
 
-    # keep around allocations that escape
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_2(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar0, 0, optvar1)"""
-
-@pytest.mark.xfail
-def test_alloc_removal_2_fail():
+def example3(optimize):
     # don't materialize allocations twice
     bb = Block()
     var0 = bb.getarg(0)
     ls = bb.alloc()
     sto0 = bb.store(var0, 0, ls)
     sto1 = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_2(bb)
+    opt_bb = optimize(bb)
     assert bb_to_str(opt_bb, "optvar") == """\
 optvar0 = getarg(0)
 optvar1 = alloc()
 optvar2 = store(optvar0, 0, optvar1)
 optvar3 = store(optvar0, 0, optvar1)"""
+
+@pytest.mark.xfail
+def test_alloc_removal_2_fail():
+    example3(optimize_alloc_removal_2)
 
 # version 3 don't materialize twice
 
@@ -269,8 +253,9 @@ def materialize_3(opt_bb, value: Operation) -> None:
     if info is None:
         return # already materialized
     assert value.name == "alloc"
-    # but the alloc operation back into the trace
+    # put the alloc operation back into the trace
     opt_bb.append(value)
+    # but only once
     value.info = None
 
 def optimize_alloc_removal_3(bb):
@@ -295,84 +280,53 @@ def optimize_alloc_removal_3(bb):
         opt_bb.append(op)
     return opt_bb
 
-
-def test_alloc_removal_3():
-    # remove unused allocations
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(ls, 0, var0)
-    var1 = bb.load(ls, 0)
-    opt_bb = optimize_alloc_removal_3(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)"""
-
-    # keep around allocations that escape
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_3(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar0, 0, optvar1)"""
-
-    # don't materialize allocations twice
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto0 = bb.store(var0, 0, ls)
-    sto1 = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_3(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar0, 0, optvar1)
-optvar3 = store(optvar0, 0, optvar1)"""
-
-@pytest.mark.xfail
-def test_alloc_removal_3_fail():
-    # materialization of constants
-    bb = Block()
-    var0 = bb.getarg(0)
-    sto = bb.store(var0, 0, 17)
-    opt_bb = optimize_alloc_removal_4(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = store(optvar0, 0, 17)"""
-
-@pytest.mark.xfail
-def test_alloc_removal_3_fail_2():
+def example4(optimize):
     # materialization of non-virtuals
     bb = Block()
     var0 = bb.getarg(0)
     var1 = bb.getarg(1)
     sto = bb.store(var0, 0, var1)
-    opt_bb = optimize_alloc_removal_4(bb)
+    opt_bb = optimize(bb)
     assert bb_to_str(opt_bb, "optvar") == """\
 optvar0 = getarg(0)
 optvar1 = getarg(1)
 optvar2 = store(optvar0, 0, optvar1)"""
 
 
-# version 4
+def test_alloc_removal_3():
+    example1(optimize_alloc_removal_3)
+    example2(optimize_alloc_removal_3)
+    example3(optimize_alloc_removal_3)
+    example4(optimize_alloc_removal_3)
+
+def example5(optimize):
+    # materialization of constants
+    bb = Block()
+    var0 = bb.getarg(0)
+    sto = bb.store(var0, 0, 17)
+    opt_bb = optimize(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = store(optvar0, 0, 17)"""
+
+@pytest.mark.xfail
+def test_alloc_removal_3_fail():
+    example5(optimize_alloc_removal_3)
+
+# version 4 constants
 
 def materialize_4(opt_bb, value: Operation) -> None:
     if isinstance(value, Constant):
-        return # don't need to materialize
-    assert not isinstance(value, Constant)
+        return
     assert isinstance(value, Operation)
     info = value.info
     if info is None:
         return # already materialized
     assert value.name == "alloc"
-    # but the alloc operation back into the trace
+    # put the alloc operation back into the trace
     opt_bb.append(value)
+    # but only once
     value.info = None
-    for idx, val in sorted(info.contents.items()):
-        materialize_4(opt_bb, val)
-        opt_bb.store(value, idx, val)
 
 def optimize_alloc_removal_4(bb):
     opt_bb = Block()
@@ -396,71 +350,245 @@ def optimize_alloc_removal_4(bb):
         opt_bb.append(op)
     return opt_bb
 
-
 def test_alloc_removal_4():
-    # remove unused allocations
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(ls, 0, var0)
-    var1 = bb.load(ls, 0)
-    opt_bb = optimize_alloc_removal_4(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)"""
+    example1(optimize_alloc_removal_4)
+    example2(optimize_alloc_removal_4)
+    example3(optimize_alloc_removal_4)
+    example4(optimize_alloc_removal_4)
+    example5(optimize_alloc_removal_4)
 
-    # keep around allocations that escape
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_4(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar0, 0, optvar1)"""
-
-    # don't materialize allocations twice
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto0 = bb.store(var0, 0, ls)
-    sto1 = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_4(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar0, 0, optvar1)
-optvar3 = store(optvar0, 0, optvar1)"""
-
+def example6(optimize):
     # materialize allocation contents
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    contents = bb.store(ls, 1, 7)
-    sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_4(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar1, 1, 7)
-optvar3 = store(optvar0, 0, optvar1)"""
-
-@pytest.mark.xfail
-def test_alloc_removal_4_fail():
-    # materialize constant fields
     bb = Block()
     var0 = bb.getarg(0)
     ls = bb.alloc()
     contents0 = bb.store(ls, 1, 8)
     contents1 = bb.store(ls, 0, 7)
     sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal_4(bb)
+    opt_bb = optimize(bb)
     assert bb_to_str(opt_bb, "optvar") == """\
 optvar0 = getarg(0)
 optvar1 = alloc()
 optvar2 = store(optvar1, 0, 7)
 optvar3 = store(optvar1, 1, 8)
 optvar4 = store(optvar0, 0, optvar1)"""
+
+@pytest.mark.xfail
+def test_alloc_removal_4_fail():
+    example6(optimize_alloc_removal_4)
+
+
+# version 5 materialize content
+
+def materialize_5(opt_bb, value: Operation) -> None:
+    if isinstance(value, Constant):
+        return
+    assert isinstance(value, Operation)
+    info = value.info
+    if info is None:
+        return # already materialized
+    assert value.name == "alloc"
+    # put the alloc operation back into the trace
+    opt_bb.append(value)
+    # put the content back
+    for idx, val in sorted(info.contents.items()):
+        opt_bb.store(value, idx, val)
+    # only materialize once
+    value.info = None
+
+def optimize_alloc_removal_5(bb):
+    opt_bb = Block()
+    for op in bb:
+        if op.name == "alloc":
+            op.info = VirtualObject()
+            continue
+        if op.name == "load":
+            info = op.arg(0).info
+            field = get_num(op)
+            op.make_equal_to(info.load(field))
+            continue
+        if op.name == "store":
+            info = op.arg(0).info
+            if info:
+                field = get_num(op)
+                info.store(field, op.arg(2))
+                continue
+            else:
+                materialize_5(opt_bb, op.arg(2))
+        opt_bb.append(op)
+    return opt_bb
+
+def test_alloc_removal_5():
+    example1(optimize_alloc_removal_5)
+    example2(optimize_alloc_removal_5)
+    example3(optimize_alloc_removal_5)
+    example4(optimize_alloc_removal_5)
+    example5(optimize_alloc_removal_5)
+    example6(optimize_alloc_removal_5)
+
+def example7(optimize):
+    # materialize chained objects
+    bb = Block()
+    var0 = bb.getarg(0)
+    ls0 = bb.alloc()
+    ls1 = bb.alloc()
+    contents = bb.store(ls0, 1, ls1)
+    const = bb.store(ls1, 2, 1337)
+    sto = bb.store(var0, 0, ls0)
+    opt_bb = optimize(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = alloc()
+optvar2 = alloc()
+optvar3 = store(optvar2, 2, 1337)
+optvar4 = store(optvar1, 1, optvar2)
+optvar5 = store(optvar0, 0, optvar1)"""
+
+
+@pytest.mark.xfail
+def test_alloc_removal_5_fail():
+    example7(optimize_alloc_removal_5)
+
+# version 6 materialize recursively
+
+def materialize_6(opt_bb, value: Operation) -> None:
+    if isinstance(value, Constant):
+        return
+    assert isinstance(value, Operation)
+    info = value.info
+    if info is None:
+        return # already materialized
+    assert value.name == "alloc"
+    # put the alloc operation back into the trace
+    opt_bb.append(value)
+    # put the content back
+    for idx, val in sorted(info.contents.items()):
+        # materialize recursively
+        materialize(opt_bb, val)
+        opt_bb.store(value, idx, val)
+    # only materialize once
+    value.info = None
+
+def optimize_alloc_removal_6(bb):
+    opt_bb = Block()
+    for op in bb:
+        if op.name == "alloc":
+            op.info = VirtualObject()
+            continue
+        if op.name == "load":
+            info = op.arg(0).info
+            field = get_num(op)
+            op.make_equal_to(info.load(field))
+            continue
+        if op.name == "store":
+            info = op.arg(0).info
+            if info:
+                field = get_num(op)
+                info.store(field, op.arg(2))
+                continue
+            else:
+                materialize_6(opt_bb, op.arg(2))
+        opt_bb.append(op)
+    return opt_bb
+
+def test_alloc_removal_6():
+    example1(optimize_alloc_removal_6)
+    example2(optimize_alloc_removal_6)
+    example3(optimize_alloc_removal_6)
+    example4(optimize_alloc_removal_6)
+    example5(optimize_alloc_removal_6)
+    example6(optimize_alloc_removal_6)
+    example7(optimize_alloc_removal_6)
+
+def example8(optimize):
+    # handle recursive store
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.alloc()
+    var2 = bb.store(var1, 0, var1)
+    var3 = bb.store(var0, 1, var1)
+    opt_bb = optimize(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = alloc()
+optvar2 = store(optvar1, 0, optvar1)
+optvar3 = store(optvar0, 1, optvar1)"""
+
+
+
+@pytest.mark.xfail
+def test_alloc_removal_6_fail():
+    example8(optimize_alloc_removal_6)
+
+# version 7 fix recursion bug
+
+def materialize_7(opt_bb, value: Operation) -> None:
+    if isinstance(value, Constant):
+        return
+    assert isinstance(value, Operation)
+    info = value.info
+    if info is None:
+        return # already materialized
+    assert value.name == "alloc"
+    # put the alloc operation back into the trace
+    opt_bb.append(value)
+    # only materialize once
+    value.info = None
+    # put the content back
+    for idx, val in sorted(info.contents.items()):
+        # materialize recursively
+        materialize(opt_bb, val)
+        opt_bb.store(value, idx, val)
+
+def optimize_alloc_removal_7(bb):
+    opt_bb = Block()
+    for op in bb:
+        if op.name == "alloc":
+            op.info = VirtualObject()
+            continue
+        if op.name == "load":
+            info = op.arg(0).info
+            field = get_num(op)
+            op.make_equal_to(info.load(field))
+            continue
+        if op.name == "store":
+            info = op.arg(0).info
+            if info:
+                field = get_num(op)
+                info.store(field, op.arg(2))
+                continue
+            else:
+                materialize_7(opt_bb, op.arg(2))
+        opt_bb.append(op)
+    return opt_bb
+
+def test_alloc_removal_7():
+    example1(optimize_alloc_removal_7)
+    example2(optimize_alloc_removal_7)
+    example3(optimize_alloc_removal_7)
+    example4(optimize_alloc_removal_7)
+    example5(optimize_alloc_removal_7)
+    example6(optimize_alloc_removal_7)
+    example7(optimize_alloc_removal_7)
+    example8(optimize_alloc_removal_7)
+
+
+def example9(optimize):
+    # materialize not just on store
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.alloc()
+    var2 = bb.escape(var1)
+    opt_bb = optimize(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = alloc()
+optvar2 = escape(optvar1)"""
+
+
+@pytest.mark.xfail
+def test_alloc_removal_7_fail():
+    example9(optimize_alloc_removal_7)
 
 
 # final
@@ -505,144 +633,17 @@ def optimize_alloc_removal(bb):
 
 
 def test_alloc_removal_final():
-    # remove unused allocations
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(ls, 0, var0)
-    var1 = bb.load(ls, 0)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)"""
+    example1(optimize_alloc_removal)
+    example2(optimize_alloc_removal)
+    example3(optimize_alloc_removal)
+    example4(optimize_alloc_removal)
+    example5(optimize_alloc_removal)
+    example6(optimize_alloc_removal)
+    example7(optimize_alloc_removal)
+    example8(optimize_alloc_removal)
+    example9(optimize_alloc_removal)
 
-    # keep around allocations that escape
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar0, 0, optvar1)"""
-
-    # don't materialize allocations twice
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    sto0 = bb.store(var0, 0, ls)
-    sto1 = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar0, 0, optvar1)
-optvar3 = store(optvar0, 0, optvar1)"""
-
-    # materialization of constants
-    bb = Block()
-    var0 = bb.getarg(0)
-    sto = bb.store(var0, 0, 17)
-    opt_bb = optimize_alloc_removal_4(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = store(optvar0, 0, 17)"""
-
-    # materialization of non-virtuals
-    bb = Block()
-    var0 = bb.getarg(0)
-    var1 = bb.getarg(1)
-    sto = bb.store(var0, 0, var1)
-    opt_bb = optimize_alloc_removal_4(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = getarg(1)
-optvar2 = store(optvar0, 0, optvar1)"""
-
-    # materialize allocation contents
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    contents = bb.store(ls, 1, 7)
-    sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar1, 1, 7)
-optvar3 = store(optvar0, 0, optvar1)"""
-
-    # materialize allocation contents in field order
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls = bb.alloc()
-    contents0 = bb.store(ls, 1, 8)
-    contents1 = bb.store(ls, 0, 7)
-    sto = bb.store(var0, 0, ls)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar1, 0, 7)
-optvar3 = store(optvar1, 1, 8)
-optvar4 = store(optvar0, 0, optvar1)"""
-
-    # materialize chained objects
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls0 = bb.alloc()
-    ls1 = bb.alloc()
-    contents = bb.store(ls0, 1, ls1)
-    const = bb.store(ls1, 2, 1337)
-    sto = bb.store(var0, 0, ls0)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = alloc()
-optvar3 = store(optvar2, 2, 1337)
-optvar4 = store(optvar1, 1, optvar2)
-optvar5 = store(optvar0, 0, optvar1)"""
-
-    # materialize only inner allocs
-    bb = Block()
-    var0 = bb.getarg(0)
-    ls0 = bb.alloc()
-    ls1 = bb.alloc()
-    contents = bb.store(ls0, 1, ls1)
-    const = bb.store(ls1, 2, 1337)
-    sto = bb.store(var0, 0, ls1)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar1, 2, 1337)
-optvar3 = store(optvar0, 0, optvar1)"""
-
-    # handle recursive store
-    bb = Block()
-    var0 = bb.getarg(0)
-    var1 = bb.alloc()
-    var2 = bb.store(var1, 0, var1)
-    var3 = bb.store(var0, 1, var1)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = store(optvar1, 0, optvar1)
-optvar3 = store(optvar0, 1, optvar1)"""
-
-    # materialize not just on store
-    bb = Block()
-    var0 = bb.getarg(0)
-    var1 = bb.alloc()
-    var2 = bb.escape(var1)
-    opt_bb = optimize_alloc_removal(bb)
-    assert bb_to_str(opt_bb, "optvar") == """\
-optvar0 = getarg(0)
-optvar1 = alloc()
-optvar2 = escape(optvar1)"""
-
+def test_alloc_removal_final():
     # sink allocations
     bb = Block()
     var0 = bb.getarg(0)
