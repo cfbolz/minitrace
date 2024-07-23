@@ -150,12 +150,28 @@ class KnownBits:
     ones : int
     unknowns : int
 
+    def __post_init__(self):
+        if isinstance(self.ones, int):
+            assert self.is_well_formed()
+
     @staticmethod
     def from_constant(const : int):
         return KnownBits(const, 0)
 
     def is_constant(self):
         return self.unknowns == 0
+
+    @property
+    def knowns(self):
+        return ~self.unknowns
+
+    @property
+    def zeros(self):
+        return self.knowns & ~self.ones
+
+    def is_well_formed(self):
+        # a bit cannot be both 1 and unknown
+        return self.ones & self.unknowns == 0
 
     def __repr__(self):
         if self.is_constant():
@@ -180,12 +196,18 @@ class KnownBits:
         return "".join(res)
             
     def contains(self, value : int):
-        return value & ~self.unknowns == self.ones
+        return value & self.knowns == self.ones
 
     def abstract_and(self, other):
-        ones = self.ones & other.ones
-        unknowns = (self.ones | self.unknowns) & (other.ones | other.unknowns) & ~ones
-        return KnownBits(ones, unknowns)
+        ones = self.ones & other.ones # known ones
+        knowns = self.zeros | other.zeros | ones
+        return KnownBits(ones, ~knowns)
+
+    def abstract_or(self, other):
+        ones = self.ones | other.ones # known ones
+        zeros = self.zeros & other.zeros
+        knowns = ones | zeros
+        return KnownBits(ones, ~knowns)
 
 # unit tests
 
@@ -201,6 +223,15 @@ def test_and():
     assert str(k2) ==   "111???"
     res = k1.abstract_and(k2)     # should be: 0...00001?0??
     assert str(res) ==   "1?0??"
+
+def test_or():
+    # test all combinations of 0, 1, ? in one example
+    k1 = KnownBits(0b010010010, 0b001001001) # 0...01?01?01?
+    assert str(k1) == "1?01?01?"
+    k2 = KnownBits(0b000111000, 0b000000111) # 0...000111???
+    assert str(k2) ==   "111???"
+    res = k1.abstract_or(k2)     # should be:  0...01?111?1?
+    assert str(res) ==   "1?111?1?"
 
 # hypothesis tests
 
@@ -249,6 +280,15 @@ def test_hypothesis_and(t1, t2):
     assert k3.contains(n3)
 
 
+@given(knownbits_and_contained_number, knownbits_and_contained_number)
+def test_hypothesis_or(t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_or(k2)
+    n3 = n1 | n2
+    assert k3.contains(n3)
+
+
 # proofs
 
 
@@ -263,11 +303,14 @@ def z3_knownbits_condition(var, ones, unknowns):
     return var & ~unknowns == ones
 
 def z3_int_info(name):
+    """ returns a triple: a z3 variable representing the concrete value, a
+    KnownBits instance with a z3 variables as ones and unknowns, a z3 boolean
+    formula that "glues" the two together """
     ones = BitVec(f"{name}_ones")
     unknowns = BitVec(f"{name}_unknowns")
     info = KnownBits(ones, unknowns)
     var = BitVec(f"{name}_concrete")
-    return var, info, z3.And(ones & unknowns == 0, z3_knownbits_condition(var, ones, unknowns))
+    return var, info, z3.And(info.is_well_formed(), info.contains(var))
 
 def prove_implies(*args):
     # the last argument is what is implied
@@ -290,5 +333,54 @@ def test_z3_abstract_and():
     prove_implies(
         selfcond,
         othercond,
-        z3_knownbits_condition(resvar, resinfo.ones, resinfo.unknowns)
+        z3.And(resinfo.is_well_formed(), resinfo.contains(resvar)),
     )
+
+
+def test_z3_abstract_and():
+    selfvar, selfinfo, selfcond = z3_int_info('self')
+    othervar, otherinfo, othercond = z3_int_info('other')
+    resvar = selfvar | othervar
+    resinfo = selfinfo.abstract_or(otherinfo)
+    prove_implies(
+        selfcond,
+        othercond,
+        z3.And(resinfo.is_well_formed(), resinfo.contains(resvar)),
+    )
+
+
+def test_match():
+    class Operation2(Operation):
+        __match_args__ = ('name', 'arg0', 'arg1')
+
+        @property
+        def arg0(self):
+            return self.arg(0)
+
+        @property
+        def arg1(self):
+            return self.arg(1)
+
+    x = Operation("getarg", [Constant(0)])
+    op = Operation2("add", [x, Constant(2)])
+
+    c = Constant(1)
+    x.make_equal_to(c)
+    match op:
+        case Operation2("add", Constant(a), Constant(b)):
+            print(a, b)
+            assert a 
+        case _:
+            1/0
+
+    
+    x = Operation("getarg", [Constant(0)])
+    op1 = Operation2("add", [x, Constant(2)])
+    op2 = Operation2("add", [Constant(4), op1])
+    match op2:
+        case Operation2("add", Constant(c1), Operation2("add", x, Constant(c2))):
+            newop = Operation2("add", [x, Constant(c1 + c2)])
+        case _:
+            newop = op2
+    assert newop is not op2
+
