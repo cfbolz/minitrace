@@ -192,6 +192,15 @@ class KnownBits:
             unknowns >>= 1
             if not ones and not unknowns:
                 break
+            if ones == -1 and not unknowns:
+                res.append('1')
+                res.append("...")
+                break
+            if unknowns == -1:
+                assert not ones
+                res.append("?")
+                res.append("...")
+                break
         res.reverse()
         return "".join(res)
             
@@ -218,11 +227,23 @@ class KnownBits:
         ones = sum_ones & ~unknowns
         return KnownBits(ones, unknowns)
 
+    def abstract_sub(self, other):
+        diff_ones = self.ones - other.ones
+        val_borrows = (diff_ones + self.unknowns) ^ (diff_ones - other.unknowns)
+        unknowns = self.unknowns | other.unknowns | val_borrows
+        ones = diff_ones & ~unknowns
+        return KnownBits(ones, unknowns)
+
+    def nonnegative(self):
+        return (self.ones | self.unknowns) >= 0
+
+
 # unit tests
 
 def test_str():
     assert str(KnownBits.from_constant(5)) == '101'
     assert str(KnownBits(5, 0b10)) == '1?1'
+    assert str(KnownBits(-16, 0b10)) == '...100?0'
 
 def test_and():
     # test all combinations of 0, 1, ? in one example
@@ -248,6 +269,16 @@ def test_add():
     res = k1.abstract_add(k2) # should be:    0...0?????01?10
     assert str(res) ==   "?????01?10"
 
+def test_nonnegative():
+    k1 = KnownBits(0b010010010, 0b100100100) # 0...0?10?10?10
+    assert k1.nonnegative()
+    k1 = KnownBits(0b0, -2) # ???...???0
+    assert str(k1) == '...?0'
+    assert not k1.nonnegative()
+    k1 = KnownBits.from_constant(-1)
+    assert not k1.nonnegative()
+
+
 # hypothesis tests
 
 ints_special = set(range(100))
@@ -261,8 +292,7 @@ ints_special.sort(key=lambda element: (abs(element), element < 0))
 ints_special = strategies.sampled_from(
     ints_special)
 
-ints = ints_special | strategies.integers(
-        min_value=MININT, max_value=MAXINT)
+ints = ints_special | strategies.integers()
 
 def build_knownbits_and_contained_number(value, unknowns):
     return KnownBits(value & ~unknowns, unknowns), value
@@ -312,6 +342,19 @@ def test_hypothesis_add(t1, t2):
     n3 = n1 + n2
     assert k3.contains(n3)
 
+@given(knownbits_and_contained_number, knownbits_and_contained_number)
+def test_hypothesis_sub(t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_sub(k2)
+    n3 = n1 - n2
+    assert k3.contains(n3)
+
+@given(knownbits_and_contained_number)
+def test_hypothesis_nonnegative(t1):
+    k1, n1 = t1
+    if n1 < 0:
+        assert not k1.nonnegative()
 
 # proofs
 
@@ -347,6 +390,8 @@ def prove_implies(*args):
         return
     else:
         assert res == z3.sat
+        global model
+        model = solver.model()
         raise ValueError(solver.model())
 
 def test_z3_abstract_and():
@@ -361,7 +406,7 @@ def test_z3_abstract_and():
     )
 
 
-def test_z3_abstract_and():
+def test_z3_abstract_or():
     selfvar, selfinfo, selfcond = z3_int_info('self')
     othervar, otherinfo, othercond = z3_int_info('other')
     res = selfvar | othervar
@@ -372,18 +417,44 @@ def test_z3_abstract_and():
         z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
     )
 
-def test_z3_abstract_and():
+def test_z3_abstract_add():
     selfvar, selfinfo, selfcond = z3_int_info('self')
     othervar, otherinfo, othercond = z3_int_info('other')
     res = selfvar + othervar
-    resinfo = selfinfo.abstract_or(otherinfo)
+    resinfo = selfinfo.abstract_add(otherinfo)
     prove_implies(
         selfcond,
         othercond,
         z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
     )
 
+def test_z3_abstract_sub():
+    selfvar, selfinfo, selfcond = z3_int_info('self')
+    othervar, otherinfo, othercond = z3_int_info('other')
+    res = selfvar - othervar
+    resinfo = selfinfo.abstract_sub(otherinfo)
+    prove_implies(
+        selfcond,
+        othercond,
+        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
+    )
 
+def test_z3_nonnegative():
+    selfvar, selfinfo, selfcond = z3_int_info('self')
+    prove_implies(
+        selfcond,
+        selfinfo.nonnegative(),
+        selfvar >= 0,
+    )
+
+#def test_z3_known_lt():
+#    selfvar, selfinfo, selfcond = z3_int_info('self')
+#    othervar, otherinfo, othercond = z3_int_info('other')
+#    prove_implies(
+#        selfcond,
+#        selfinfo.known_le(otherinfo),
+#        selfvar <= othervar
+#    )
 
 def test_match():
     class Operation2(Operation):
