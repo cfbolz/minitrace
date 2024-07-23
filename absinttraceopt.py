@@ -5,9 +5,6 @@ from hypothesis import given, strategies, example, seed, assume
 from dataclasses import dataclass
 from typing import Optional, Any
 
-LONG_BIT = 64
-MAXINT = 2 ** (LONG_BIT - 1) - 1
-MININT = -2 ** (LONG_BIT - 1)
 
 class Value:
     def find(self):
@@ -22,8 +19,6 @@ class Operation(Value):
     args : list[Value]
 
     forwarded : Optional[Value] = None
-
-    info : Any = None
 
     def find(self) -> Value:
         op = self
@@ -92,61 +87,20 @@ def bb_to_str(l : Block, varprefix : str = "var"):
         res.append(strop)
     return "\n".join(res)
 
-def get_num(op, index=1):
-    assert isinstance(op.arg(index), Constant)
-    return op.arg(index).value
-
-class GuardError(Exception):
-    pass
-
-def interpret(bb : Block, *args : tuple[Any]):
-    results : dict[Operation, Any] = {}
-    def argval(op, i):
-        arg = op.arg(i)
-        if isinstance(arg, Constant):
-            return arg.value
-        else:
-            assert isinstance(arg, Operation)
-            return results[arg]
-
-    for index, op in enumerate(bb):
-        if op.name == "getarg":
-            res = args[get_num(op, 0)]
-        elif op.name == "int_add":
-            res = argval(op, 0) + argval(op, 1)
-        elif op.name == "int_lt":
-            res = int(argval(op, 0) < argval(op, 1))
-        elif op.name == "int_and":
-            res = argval(op, 0) & argval(op, 1)
-        elif op.name == "guard_true":
-            res = argval(op, 0)
-            if not res:
-                raise GuardError(op, res)
-        elif op.name == "finish":
-            return argval(op, 0)
-        else:
-            assert 0, "unknown op"
-        results[op] = res
-
-def test_interpret():
-    bb = Block()
-    var0 = bb.getarg(0)
-    var1 = bb.int_lt(0, var0)
-    bb.guard_true(var1)
-    var2 = bb.int_add(var0, 2)
-    var3 = bb.int_lt(2, var2)
-    bb.guard_true(var3)
-    bb.finish(var2)
-    assert interpret(bb, 17) == 19
-    assert interpret(bb, 1) == 3
-    with pytest.raises(GuardError):
-        interpret(bb, -3)
-
 
 # start an abstract value that uses "known bits"
 
 @dataclass(eq=False)
 class KnownBits:
+    """ An abstract domain representing sets of integers where some bits of the
+    integer can be known 0, or known 1, the rest is unknown. We represent this
+    by two ints:
+    - ones, which has bits set in the places where the bit must be 1
+    - unknowns which has bits set in the places where the bit is unknown
+    every bit can be in one of three states, 0, 1, or ?. the fourth
+    combination, where both ones and unknowns have a bit set in the same place,
+    is forbidden.
+    """
     ones : int
     unknowns : int
 
@@ -154,24 +108,33 @@ class KnownBits:
         if isinstance(self.ones, int):
             assert self.is_well_formed()
 
+    def is_well_formed(self):
+        # a bit cannot be both 1 and unknown
+        return self.ones & self.unknowns == 0
+
     @staticmethod
     def from_constant(const : int):
+        """ Construct a KnownBits corresponding to a constant, where all bits
+        are known."""
         return KnownBits(const, 0)
-
-    def is_constant(self):
-        return self.unknowns == 0
 
     @property
     def knowns(self):
+        """ return an integer where the known bits are set. """
+        # the knowns are just the unknowns, inverted
         return ~self.unknowns
 
     @property
     def zeros(self):
+        """ return an integer where the places that are known zeros have a bit
+        set. """
+        # it's a 0 if it is known, but not 1
         return self.knowns & ~self.ones
 
-    def is_well_formed(self):
-        # a bit cannot be both 1 and unknown
-        return self.ones & self.unknowns == 0
+    def is_constant(self):
+        """ Check if the KnownBits instance represents a constant. """
+        # it's a constant if there are no unknowns
+        return self.unknowns == 0
 
     def __repr__(self):
         if self.is_constant():
@@ -181,7 +144,8 @@ class KnownBits:
     def __str__(self):
         res = []
         ones, unknowns = self.ones, self.unknowns
-        for i in range(LONG_BIT):
+        # construct the string representation right to left
+        while 1:
             if unknowns & 1:
                 res.append('?')
             elif ones & 1:
@@ -191,12 +155,16 @@ class KnownBits:
             ones >>= 1
             unknowns >>= 1
             if not ones and not unknowns:
-                break
+                break # we leave off the leading known 0s
             if ones == -1 and not unknowns:
+                # -1 has all bits set in two's complement, so the leading
+                # bits are all 1
                 res.append('1')
                 res.append("...")
                 break
             if unknowns == -1:
+                # -1 has all bits set in two's complement, so the leading bits
+                # are all ?
                 assert not ones
                 res.append("?")
                 res.append("...")
@@ -205,6 +173,10 @@ class KnownBits:
         return "".join(res)
             
     def contains(self, value : int):
+        """ Check whether the KnownBits instance contains the concrete integer
+        `value`. """
+        # check whether value matches the bit pattern. in the places where we
+        # know the bits, the value must agree with ones.
         return value & self.knowns == self.ones
 
     def abstract_and(self, other):
@@ -233,6 +205,19 @@ class KnownBits:
         unknowns = self.unknowns | other.unknowns | val_borrows
         ones = diff_ones & ~unknowns
         return KnownBits(ones, unknowns)
+
+    def abstract_eq(self, other):
+        # the result is a 0, 1, or ?
+        if self.is_constant() and other.is_constant() and self.ones == other.ones:
+            return KnownBits.from_constant(1)
+        if self._disagrees(other):
+            return KnownBits.from_constant(0)
+        return KnownBits(0, 1) # a boolean
+
+    def _disagrees(self, other):
+        # check whether the bits disagree in any place where both are known
+        both_known = self.knowns & other.knowns
+        return self.ones & both_known != other.ones & both_known
 
     def nonnegative(self):
         return (self.ones | self.unknowns) >= 0
@@ -269,6 +254,17 @@ def test_add():
     res = k1.abstract_add(k2) # should be:    0...0?????01?10
     assert str(res) ==   "?????01?10"
 
+def test_abstract_eq():
+    k1 = KnownBits(0, -1) # ...?
+    k2 = KnownBits(0, -1) # ...?
+    assert str(k1.abstract_eq(k2)) == '?'
+    k1 = KnownBits.from_constant(10)
+    assert str(k1.abstract_eq(k1)) == '1'
+    k1 = KnownBits.from_constant(10)
+    k2 = KnownBits.from_constant(20)
+    assert str(k1.abstract_eq(k2)) == '0'
+
+
 def test_nonnegative():
     k1 = KnownBits(0b010010010, 0b100100100) # 0...0?10?10?10
     assert k1.nonnegative()
@@ -281,11 +277,12 @@ def test_nonnegative():
 
 # hypothesis tests
 
+INTEGER_WIDTH = 64
 ints_special = set(range(100))
 ints_special = ints_special.union(-x for x in ints_special)
 ints_special = ints_special.union(~x for x in ints_special)
-ints_special = ints_special.union(1 << i for i in range(LONG_BIT - 2)) # powers of two
-ints_special = ints_special.union((1 << i) - 1 for i in range(LONG_BIT - 2)) # powers of two - 1
+ints_special = ints_special.union(1 << i for i in range(INTEGER_WIDTH - 2)) # powers of two
+ints_special = ints_special.union((1 << i) - 1 for i in range(INTEGER_WIDTH - 2)) # powers of two - 1
 ints_special = list(ints_special)
 ints_special.sort(key=lambda element: (abs(element), element < 0))
 
@@ -356,15 +353,26 @@ def test_hypothesis_nonnegative(t1):
     if n1 < 0:
         assert not k1.nonnegative()
 
+@given(knownbits_and_contained_number, knownbits_and_contained_number)
+def test_hypothesis_eq(t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_eq(k2)
+    assert k3.contains(int(n1 == n2))
+
+
 # proofs
 
 
 
 def BitVec(name):
-    return z3.BitVec(name, LONG_BIT)
+    return z3.BitVec(name, INTEGER_WIDTH)
 
 def BitVecVal(val):
-    return z3.BitVecVal(val, LONG_BIT)
+    return z3.BitVecVal(val, INTEGER_WIDTH)
+
+def z3_cond(b):
+    return z3.If(b, BitVecVal(1), BitVecVal(0))
 
 def z3_knownbits_condition(var, ones, unknowns):
     return var & ~unknowns == ones
@@ -447,14 +455,21 @@ def test_z3_nonnegative():
         selfvar >= 0,
     )
 
-#def test_z3_known_lt():
-#    selfvar, selfinfo, selfcond = z3_int_info('self')
-#    othervar, otherinfo, othercond = z3_int_info('other')
-#    prove_implies(
-#        selfcond,
-#        selfinfo.known_le(otherinfo),
-#        selfvar <= othervar
-#    )
+def test_z3_abstract_eq_logic():
+    selfvar, self, selfcond = z3_int_info('self')
+    othervar, other, othercond = z3_int_info('other')
+    res = z3_cond(selfvar == othervar)
+    case1cond = z3.And(self.is_constant(), other.is_constant(), self.ones == other.ones)
+    case2cond = self._disagrees(other)
+    ones = z3_cond(case1cond)
+    unknowns = z3_cond(z3.Not(z3.Or(case1cond, case2cond)))
+    resinfo = KnownBits(ones, unknowns)
+    prove_implies(
+        selfcond,
+        othercond,
+        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
+    )
+
 
 def test_match():
     class Operation2(Operation):
