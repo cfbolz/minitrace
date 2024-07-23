@@ -209,6 +209,15 @@ class KnownBits:
         knowns = ones | zeros
         return KnownBits(ones, ~knowns)
 
+    def abstract_add(self, other):
+        sum_ones = self.ones + other.ones
+        sum_unknowns = self.unknowns + other.unknowns
+        all_carries = sum_ones + sum_unknowns
+        ones_carries = all_carries ^ sum_ones
+        unknowns = self.unknowns | other.unknowns | ones_carries
+        ones = sum_ones & ~unknowns
+        return KnownBits(ones, unknowns)
+
 # unit tests
 
 def test_str():
@@ -232,6 +241,12 @@ def test_or():
     assert str(k2) ==   "111???"
     res = k1.abstract_or(k2)     # should be:  0...01?111?1?
     assert str(res) ==   "1?111?1?"
+
+def test_add():
+    k1 = KnownBits(0b010010010, 0b100100100) # 0...0?10?10?10
+    k2 = KnownBits(0b000111000, 0b111000000) # 0...0???111000
+    res = k1.abstract_add(k2) # should be:    0...0?????01?10
+    assert str(res) ==   "?????01?10"
 
 # hypothesis tests
 
@@ -289,6 +304,15 @@ def test_hypothesis_or(t1, t2):
     assert k3.contains(n3)
 
 
+@given(knownbits_and_contained_number, knownbits_and_contained_number)
+def test_hypothesis_add(t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_add(k2)
+    n3 = n1 + n2
+    assert k3.contains(n3)
+
+
 # proofs
 
 
@@ -328,25 +352,37 @@ def prove_implies(*args):
 def test_z3_abstract_and():
     selfvar, selfinfo, selfcond = z3_int_info('self')
     othervar, otherinfo, othercond = z3_int_info('other')
-    resvar = selfvar & othervar
+    res = selfvar & othervar
     resinfo = selfinfo.abstract_and(otherinfo)
     prove_implies(
         selfcond,
         othercond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(resvar)),
+        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
     )
 
 
 def test_z3_abstract_and():
     selfvar, selfinfo, selfcond = z3_int_info('self')
     othervar, otherinfo, othercond = z3_int_info('other')
-    resvar = selfvar | othervar
+    res = selfvar | othervar
     resinfo = selfinfo.abstract_or(otherinfo)
     prove_implies(
         selfcond,
         othercond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(resvar)),
+        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
     )
+
+def test_z3_abstract_and():
+    selfvar, selfinfo, selfcond = z3_int_info('self')
+    othervar, otherinfo, othercond = z3_int_info('other')
+    res = selfvar + othervar
+    resinfo = selfinfo.abstract_or(otherinfo)
+    prove_implies(
+        selfcond,
+        othercond,
+        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
+    )
+
 
 
 def test_match():
