@@ -146,14 +146,6 @@ class KnownBits:
         ones, unknowns = self.ones, self.unknowns
         # construct the string representation right to left
         while 1:
-            if unknowns & 1:
-                res.append('?')
-            elif ones & 1:
-                res.append('1')
-            else:
-                res.append('0')
-            ones >>= 1
-            unknowns >>= 1
             if not ones and not unknowns:
                 break # we leave off the leading known 0s
             if ones == -1 and not unknowns:
@@ -169,6 +161,16 @@ class KnownBits:
                 res.append("?")
                 res.append("...")
                 break
+            if unknowns & 1:
+                res.append('?')
+            elif ones & 1:
+                res.append('1')
+            else:
+                res.append('0')
+            ones >>= 1
+            unknowns >>= 1
+        if not res:
+            res.append('0')
         res.reverse()
         return "".join(res)
             
@@ -178,6 +180,9 @@ class KnownBits:
         # check whether value matches the bit pattern. in the places where we
         # know the bits, the value must agree with ones.
         return value & self.knowns == self.ones
+
+    def abstract_invert(self):
+        return KnownBits(self.zeros, self.unknowns)
 
     def abstract_and(self, other):
         ones = self.ones & other.ones # known ones
@@ -226,9 +231,31 @@ class KnownBits:
 # unit tests
 
 def test_str():
+    assert str(KnownBits.from_constant(0)) == '0'
     assert str(KnownBits.from_constant(5)) == '101'
-    assert str(KnownBits(5, 0b10)) == '1?1'
+    assert str(KnownBits(0b101, 0b10)) == '1?1'
     assert str(KnownBits(-16, 0b10)) == '...100?0'
+    assert str(KnownBits(1, -2)) == '...?1'
+
+def test_contains():
+    k1 = KnownBits(0b101, 0b10) # 1?1
+    assert k1.contains(0b111)
+    assert k1.contains(0b101)
+    assert not k1.contains(0b110)
+    assert not k1.contains(0b011)
+
+    k2 = KnownBits(1, -2) # ...?1
+    for i in range(-101, 100):
+        assert k2.contains(i) == (i & 1)
+
+def test_invert():
+    k1 = KnownBits(0b010010010, 0b001001001) # 0...01?01?01?
+    k2 = k1.abstract_invert()
+    assert str(k2) == '...10?10?10?'
+
+    k1 = KnownBits(0, -1) # all unknown
+    k2 = k1.abstract_invert()
+    assert str(k2) == '...?'
 
 def test_and():
     # test all combinations of 0, 1, ? in one example
@@ -279,10 +306,10 @@ def test_nonnegative():
 
 INTEGER_WIDTH = 64
 ints_special = set(range(100))
-ints_special = ints_special.union(-x for x in ints_special)
-ints_special = ints_special.union(~x for x in ints_special)
 ints_special = ints_special.union(1 << i for i in range(INTEGER_WIDTH - 2)) # powers of two
 ints_special = ints_special.union((1 << i) - 1 for i in range(INTEGER_WIDTH - 2)) # powers of two - 1
+ints_special = ints_special.union(-x for x in ints_special)
+ints_special = ints_special.union(~x for x in ints_special)
 ints_special = list(ints_special)
 ints_special.sort(key=lambda element: (abs(element), element < 0))
 
@@ -311,6 +338,14 @@ def test_hypothesis_contains(t1):
     k1, n1 = t1
     print(n1, k1)
     assert k1.contains(n1)
+
+
+@given(knownbits_and_contained_number)
+def test_hypothesis_invert(t1):
+    k1, n1 = t1
+    k2 = k1.abstract_invert()
+    n2 = ~n1
+    assert k2.contains(n2)
 
 
 @given(knownbits_and_contained_number, knownbits_and_contained_number)
@@ -402,6 +437,15 @@ def prove_implies(*args):
         model = solver.model()
         raise ValueError(solver.model())
 
+def test_z3_abstract_invert():
+    selfvar, selfinfo, selfcond = z3_int_info('self')
+    res = ~selfvar
+    resinfo = selfinfo.abstract_invert()
+    prove_implies(
+        selfcond,
+        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
+    )
+
 def test_z3_abstract_and():
     selfvar, selfinfo, selfcond = z3_int_info('self')
     othervar, otherinfo, othercond = z3_int_info('other')
@@ -412,7 +456,6 @@ def test_z3_abstract_and():
         othercond,
         z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
     )
-
 
 def test_z3_abstract_or():
     selfvar, selfinfo, selfcond = z3_int_info('self')
