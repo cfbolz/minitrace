@@ -524,8 +524,24 @@ def test_z3_abstract_eq_logic():
     # in the first two cases, unknowns is 0, 1 otherwise
     unknowns = z3_cond(z3.Or(case1cond, case2cond), 0, 1)
     k3 = KnownBits(ones, unknowns)
-    import pdb;pdb.set_trace()
     prove(k3.contains(n3))
+
+def test_z3_prove_constant_folding():
+    k3 = k1.abstract_invert()
+    prove(z3.Implies(k1.is_constant(),
+                     k3.is_constant()))
+
+    k3 = k1.abstract_and(k2)
+    prove(z3.Implies(z3.And(k1.is_constant(), k2.is_constant()),
+                     k3.is_constant()))
+
+    k3 = k1.abstract_or(k2)
+    prove(z3.Implies(z3.And(k1.is_constant(), k2.is_constant()),
+                     k3.is_constant()))
+
+    k3 = k1.abstract_sub(k2)
+    prove(z3.Implies(z3.And(k1.is_constant(), k2.is_constant()),
+                     k3.is_constant()))
 
 
 def test_match():
