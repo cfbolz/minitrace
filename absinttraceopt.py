@@ -1,6 +1,6 @@
 import z3
 import pytest
-from hypothesis import given, strategies, example, seed, assume
+from hypothesis import given, strategies, example, seed, assume, settings
 
 from dataclasses import dataclass
 from typing import Optional, Any
@@ -542,6 +542,45 @@ def test_z3_prove_constant_folding():
     k3 = k1.abstract_sub(k2)
     prove(z3.Implies(z3.And(k1.is_constant(), k2.is_constant()),
                      k3.is_constant()))
+
+@given(random_knownbits_and_contained_number, random_knownbits_and_contained_number)
+@settings(deadline=None)
+def test_check_precision(t1, t2):
+    b1, n1 = t1
+    b2, n2 = t2
+    b3 = b1.abstract_add(b2)
+    example_res = n1 + n2
+    ones = BitVec('ones')
+    unknowns = BitVec('unknowns')
+    solver = z3.Solver()
+    solver.set("timeout", 800)
+    var1 = BitVec('v1')
+    var2 = BitVec('v2')
+    formula1 = b1.contains(var1)
+    formula2 = b2.contains(var2)
+
+    better_b3 = KnownBits(ones, unknowns)
+    import gc
+    gc.collect()
+    print(b1, b2, b3)
+
+    res = solver.check(z3.And(
+        better_b3.is_well_formed(),
+        better_b3.knowns & ~b3.knowns != 0,
+        better_b3.contains(example_res),
+        z3.ForAll(
+        [var1, var2],
+        z3.Implies(
+            z3.And(formula1, formula2),
+            better_b3.contains(var1 + var2)))))
+    if res == z3.sat:
+        model = solver.model()
+        rb3 = KnownBits(model.eval(ones).as_signed_long(), model.eval(unknowns).as_signed_long())
+        print("better", rb3)
+        assert 0
+    if res == z3.unknown:
+        print("timeout")
+    assert res != z3.sat
 
 
 def test_match():
