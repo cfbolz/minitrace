@@ -463,7 +463,7 @@ def z3_proof(test_func):
         if z3res == z3.unsat:
             return True
         else:
-            assert res == z3.sat
+            assert z3res == z3.sat
             global model
             model = solver.model()
             raise ValueError(solver.model())
@@ -540,7 +540,7 @@ def test_z3_abstract_eq_logic(prove, t1, t2):
     k2, n2 = t2
     n3 = z3_cond(n1 == n2)
     # follow the *logic* of abstract_eq, we can't call it due to the ifs in it
-    case1cond = k1._are_eq_constants(k2)
+    case1cond = z3.And(k1.is_constant(), k2.is_constant(), k1.ones == k2.ones)
     case2cond = k1._disagrees(k2)
 
     # ones is 1 in the first case, 0 otherwise
