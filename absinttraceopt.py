@@ -237,11 +237,14 @@ class KnownBits:
 
     def abstract_eq(self, other):
         # the result is a 0, 1, or ?
-        if self.is_constant() and other.is_constant() and self.ones == other.ones:
+        if self._are_eq_constants(other):
             return KnownBits.from_constant(1)
         if self._disagrees(other):
             return KnownBits.from_constant(0)
         return KnownBits(0, 1) # a boolean
+
+    def _are_eq_constants(self, other):
+        return self.is_constant() and other.is_constant() and self.ones == other.ones
 
     def _disagrees(self, other):
         # check whether the bits disagree in any place where both are known
@@ -443,9 +446,6 @@ def BitVec(name):
 def BitVecVal(val):
     return z3.BitVecVal(val, INTEGER_WIDTH)
 
-def z3_cond(b):
-    return z3.If(b, BitVecVal(1), BitVecVal(0))
-
 def z3_proof(test_func):
     solver = z3.Solver()
 
@@ -471,14 +471,7 @@ def z3_proof(test_func):
     num_tuple_args = test_func.__code__.co_argcount - 1
     args = [z3_int_info(f"arg_{index}") for index in range(num_tuple_args)]
 
-    def hypothesis_prove(b):
-        assert b
-
-    hypothesis_test_func = given(strategies.just(hypothesis_prove),
-                                 *(knownbits_and_contained_number, )*num_tuple_args)(test_func)
-
     def wrapped_():
-        hypothesis_test_func()
         return test_func(prove, *args)
 
     wrapped_.__name__ += test_func.__name__
@@ -489,76 +482,75 @@ def test_z3_abstract_invert(prove, t1):
     k1, n1 = t1
     k2 = k1.abstract_invert()
     n2 = ~n1
-    print(k1.ones, k1.unknowns, k2.ones, k2.unknowns, n1, n2)
     prove(k2.contains(n2))
     prove(k2.is_well_formed())
 
-def test_z3_abstract_and():
-    selfvar, selfinfo, selfcond = z3_int_info('self')
-    othervar, otherinfo, othercond = z3_int_info('other')
-    res = selfvar & othervar
-    resinfo = selfinfo.abstract_and(otherinfo)
-    prove_implies(
-        selfcond,
-        othercond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
+@z3_proof
+def test_z3_abstract_and(prove, t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_and(k2)
+    n3 = n1 & n2
+    prove(k3.contains(n3))
+    prove(k3.is_well_formed())
+
+@z3_proof
+def test_z3_abstract_or(prove, t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_or(k2)
+    n3 = n1 | n2
+    prove(k3.contains(n3))
+    prove(k3.is_well_formed())
+
+@z3_proof
+def test_z3_abstract_add(prove, t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_add(k2)
+    n3 = n1 + n2
+    prove(k3.contains(n3))
+    prove(k3.is_well_formed())
+
+@z3_proof
+def test_z3_abstract_sub(prove, t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_sub(k2)
+    n3 = n1 - n2
+    prove(k3.contains(n3))
+    prove(k3.is_well_formed())
+
+@z3_proof
+def test_z3_nonnegative(prove, t1):
+    k1, n1 = t1
+    prove(
+        z3.Implies(
+            k1.nonnegative(),
+            n1 >= 0,
+        )
     )
 
-def test_z3_abstract_or():
-    selfvar, selfinfo, selfcond = z3_int_info('self')
-    othervar, otherinfo, othercond = z3_int_info('other')
-    res = selfvar | othervar
-    resinfo = selfinfo.abstract_or(otherinfo)
-    prove_implies(
-        selfcond,
-        othercond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
-    )
+def z3_cond(b):
+    return z3.If(b, BitVecVal(1), BitVecVal(0))
 
-def test_z3_abstract_add():
-    selfvar, selfinfo, selfcond = z3_int_info('self')
-    othervar, otherinfo, othercond = z3_int_info('other')
-    res = selfvar + othervar
-    resinfo = selfinfo.abstract_add(otherinfo)
-    prove_implies(
-        selfcond,
-        othercond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
-    )
+@z3_proof
+def test_z3_abstract_eq_logic(prove, t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    n3 = z3_cond(n1 == n2)
+    # follow the *logic* of abstract_eq, we can't call it due to the ifs in it
+    case1cond = k1._are_eq_constants(k2)
+    case2cond = k1._disagrees(k2)
 
-def test_z3_abstract_sub():
-    selfvar, selfinfo, selfcond = z3_int_info('self')
-    othervar, otherinfo, othercond = z3_int_info('other')
-    res = selfvar - othervar
-    resinfo = selfinfo.abstract_sub(otherinfo)
-    prove_implies(
-        selfcond,
-        othercond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
-    )
-
-def test_z3_nonnegative():
-    selfvar, selfinfo, selfcond = z3_int_info('self')
-    prove_implies(
-        selfcond,
-        selfinfo.nonnegative(),
-        selfvar >= 0,
-    )
-
-def test_z3_abstract_eq_logic():
-    selfvar, self, selfcond = z3_int_info('self')
-    othervar, other, othercond = z3_int_info('other')
-    res = z3_cond(selfvar == othervar)
-    case1cond = z3.And(self.is_constant(), other.is_constant(), self.ones == other.ones)
-    case2cond = self._disagrees(other)
+    # ones is 1 in the first case, 0 otherwise
     ones = z3_cond(case1cond)
+
+    # unknowns is 1 in the third case, 0 otherwise
     unknowns = z3_cond(z3.Not(z3.Or(case1cond, case2cond)))
-    resinfo = KnownBits(ones, unknowns)
-    prove_implies(
-        selfcond,
-        othercond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
-    )
+    k3 = KnownBits(ones, unknowns)
+    prove(k3.is_well_formed())
+    prove(k3.contains(n3))
 
 
 def test_match():
