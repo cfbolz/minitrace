@@ -118,6 +118,30 @@ class KnownBits:
         are known."""
         return KnownBits(const, 0)
 
+    @staticmethod
+    def from_str(s):
+        """ Construct a KnownBits instance that from a string. String can start
+        with ...1 to mean that all higher bits are 1, or ...? to mean that all
+        higher bits are unknown. Otherwise it is assumed that the higher bits
+        are all 0. """
+        ones, unknowns = 0, 0
+        startindex = 0
+        if s.startswith("...?"):
+            unknowns = -1
+            startindex = 4
+        elif s.startswith("...1"):
+            ones = -1
+            startindex = 4
+        for index in range(startindex, len(s)):
+            ones <<= 1
+            unknowns <<= 1
+            c = s[index]
+            if c == '1':
+                ones |= 1
+            elif c == '?':
+                unknowns |= 1
+        return KnownBits(ones, unknowns)
+
     @property
     def knowns(self):
         """ return an integer where the known bits are set. """
@@ -234,56 +258,51 @@ def test_str():
     assert str(KnownBits.from_constant(0)) == '0'
     assert str(KnownBits.from_constant(5)) == '101'
     assert str(KnownBits(0b101, 0b10)) == '1?1'
-    assert str(KnownBits(-16, 0b10)) == '...100?0'
-    assert str(KnownBits(1, -2)) == '...?1'
+    assert str(KnownBits(~0b1111, 0b10)) == '...100?0'
+    assert str(KnownBits(1, ~0b1)) == '...?1'
 
 def test_contains():
-    k1 = KnownBits(0b101, 0b10) # 1?1
+    k1 = KnownBits.from_str('1?1')
     assert k1.contains(0b111)
     assert k1.contains(0b101)
     assert not k1.contains(0b110)
     assert not k1.contains(0b011)
 
-    k2 = KnownBits(1, -2) # ...?1
+    k2 = KnownBits.from_str('...?1') # all odd numbers
     for i in range(-101, 100):
         assert k2.contains(i) == (i & 1)
 
 def test_invert():
-    k1 = KnownBits(0b010010010, 0b001001001) # 0...01?01?01?
+    k1 = KnownBits.from_str('01?01?01?')
     k2 = k1.abstract_invert()
     assert str(k2) == '...10?10?10?'
 
-    k1 = KnownBits(0, -1) # all unknown
+    k1 = KnownBits.from_str('...?')
     k2 = k1.abstract_invert()
     assert str(k2) == '...?'
 
 def test_and():
     # test all combinations of 0, 1, ? in one example
-    k1 = KnownBits(0b010010010, 0b001001001) # 0...01?01?01?
-    assert str(k1) == "1?01?01?"
-    k2 = KnownBits(0b000111000, 0b000000111) # 0...000111???
-    assert str(k2) ==   "111???"
+    k1 = KnownBits.from_str('01?01?01?')
+    k2 = KnownBits.from_str('000111???')
     res = k1.abstract_and(k2)     # should be: 0...00001?0??
     assert str(res) ==   "1?0??"
 
 def test_or():
-    # test all combinations of 0, 1, ? in one example
-    k1 = KnownBits(0b010010010, 0b001001001) # 0...01?01?01?
-    assert str(k1) == "1?01?01?"
-    k2 = KnownBits(0b000111000, 0b000000111) # 0...000111???
-    assert str(k2) ==   "111???"
+    k1 = KnownBits.from_str('01?01?01?')
+    k2 = KnownBits.from_str('000111???')
     res = k1.abstract_or(k2)     # should be:  0...01?111?1?
     assert str(res) ==   "1?111?1?"
 
 def test_add():
-    k1 = KnownBits(0b010010010, 0b100100100) # 0...0?10?10?10
-    k2 = KnownBits(0b000111000, 0b111000000) # 0...0???111000
-    res = k1.abstract_add(k2) # should be:    0...0?????01?10
+    k1 = KnownBits.from_str('0?10?10?10')
+    k2 = KnownBits.from_str('0???111000')
+    res = k1.abstract_add(k2)
     assert str(res) ==   "?????01?10"
 
 def test_abstract_eq():
-    k1 = KnownBits(0, -1) # ...?
-    k2 = KnownBits(0, -1) # ...?
+    k1 = KnownBits.from_str('...?')
+    k2 = KnownBits.from_str('...?')
     assert str(k1.abstract_eq(k2)) == '?'
     k1 = KnownBits.from_constant(10)
     assert str(k1.abstract_eq(k1)) == '1'
@@ -293,10 +312,9 @@ def test_abstract_eq():
 
 
 def test_nonnegative():
-    k1 = KnownBits(0b010010010, 0b100100100) # 0...0?10?10?10
+    k1 = KnownBits.from_str('0?10?10?10')
     assert k1.nonnegative()
-    k1 = KnownBits(0b0, -2) # ???...???0
-    assert str(k1) == '...?0'
+    k1 = KnownBits.from_str('...?0')
     assert not k1.nonnegative()
     k1 = KnownBits.from_constant(-1)
     assert not k1.nonnegative()
@@ -318,8 +336,8 @@ ints_special = strategies.sampled_from(
 
 ints = ints_special | strategies.integers()
 
-def build_knownbits_and_contained_number(value, unknowns):
-    return KnownBits(value & ~unknowns, unknowns), value
+def build_knownbits_and_contained_number(concrete_value, unknowns):
+    return KnownBits(concrete_value & ~unknowns, unknowns), concrete_value
 
 random_knownbits_and_contained_number = strategies.builds(
     build_knownbits_and_contained_number,
@@ -336,8 +354,16 @@ knownbits_and_contained_number = constant_knownbits | random_knownbits_and_conta
 @given(knownbits_and_contained_number)
 def test_hypothesis_contains(t1):
     k1, n1 = t1
-    print(n1, k1)
+    print(KnownBits.from_constant(n1), k1)
     assert k1.contains(n1)
+
+@given(knownbits_and_contained_number)
+def test_hypothesis_str_roundtrips(t1):
+    k1, n1 = t1
+    s = str(k1)
+    k2 = KnownBits.from_str(s)
+    assert k1.ones == k2.ones
+    assert k1.unknowns == k2.unknowns
 
 
 @given(knownbits_and_contained_number)
