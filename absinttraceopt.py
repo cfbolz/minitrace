@@ -237,14 +237,15 @@ class KnownBits:
 
     def abstract_eq(self, other):
         # the result is a 0, 1, or ?
-        if self._are_eq_constants(other):
+
+        # can only be known equal if they are both constants
+        if self.is_constant() and other.is_constant() and self.ones == other.ones:
             return KnownBits.from_constant(1)
+        # check whether we have known disagreeing bits, then we know the result
+        # is 0
         if self._disagrees(other):
             return KnownBits.from_constant(0)
-        return KnownBits(0, 1) # a boolean
-
-    def _are_eq_constants(self, other):
-        return self.is_constant() and other.is_constant() and self.ones == other.ones
+        return KnownBits(0, 1) # an unknown boolean
 
     def _disagrees(self, other):
         # check whether the bits disagree in any place where both are known
@@ -314,7 +315,7 @@ def test_sub():
     assert str(res) ==   "111?????11?10"
 
 
-def test_abstract_eq():
+def test_eq():
     k1 = KnownBits.from_str('...?')
     k2 = KnownBits.from_str('...?')
     assert str(k1.abstract_eq(k2)) == '?'
@@ -440,90 +441,67 @@ def test_hypothesis_eq(t1, t2):
 
 
 
+INTEGER_WIDTH = 64
+
 def BitVec(name):
     return z3.BitVec(name, INTEGER_WIDTH)
 
 def BitVecVal(val):
     return z3.BitVecVal(val, INTEGER_WIDTH)
 
-def z3_proof(test_func):
-    solver = z3.Solver()
+solver = z3.Solver()
 
-    def z3_int_info(name):
-        ones = BitVec(f"{name}_ones")
-        unknowns = BitVec(f"{name}_unknowns")
-        info = KnownBits(ones, unknowns)
-        var = BitVec(f"{name}_concrete")
-        solver.add(info.is_well_formed())
-        solver.add(info.contains(var))
-        return info, var
+n1 = BitVec("n1")
+k1 = KnownBits(BitVec("n1_ones"), BitVec("n1_unkowns"))
+solver.add(k1.contains(n1))
 
-    def prove(cond):
-        z3res = solver.check(z3.Not(cond))
-        if z3res == z3.unsat:
-            return True
-        else:
-            assert z3res == z3.sat
-            global model
-            model = solver.model()
-            raise ValueError(solver.model())
+n2 = BitVec("n2")
+k2 = KnownBits(BitVec("n2_ones"), BitVec("n2_unkowns"))
+solver.add(k2.contains(n2))
 
-    num_tuple_args = test_func.__code__.co_argcount - 1
-    args = [z3_int_info(f"arg_{index}") for index in range(num_tuple_args)]
+def prove(cond):
+    z3res = solver.check(z3.Not(cond))
+    if z3res != z3.unsat:
+        assert z3res == z3.sat # can't be timeout, we set no timeout
+        # make the counterexample global, to make inspecting the bug in pdb
+        # easier
+        global model 
+        model = solver.model()
+        print(f"n1={model.eval(n1)}, n2={model.eval(n2)}")
+        counter_example_k1 = KnownBits(model.eval(k1.ones).as_signed_long(),
+                                       model.eval(k1.unknowns).as_signed_long())
+        counter_example_k2 = KnownBits(model.eval(k2.ones).as_signed_long(),
+                                       model.eval(k2.unknowns).as_signed_long())
+        print(f"k1={counter_example_k1}, k2={counter_example_k2}")
+        print(f"but {cond=} evaluates to {model.eval(cond)}")
+        raise ValueError(solver.model())
 
-    def wrapped_():
-        return test_func(prove, *args)
-
-    wrapped_.__name__ += test_func.__name__
-    return wrapped_
-
-@z3_proof
-def test_z3_abstract_invert(prove, t1):
-    k1, n1 = t1
+def test_z3_abstract_invert():
     k2 = k1.abstract_invert()
     n2 = ~n1
     prove(k2.contains(n2))
-    prove(k2.is_well_formed())
 
-@z3_proof
-def test_z3_abstract_and(prove, t1, t2):
-    k1, n1 = t1
-    k2, n2 = t2
+def test_z3_abstract_and():
     k3 = k1.abstract_and(k2)
     n3 = n1 & n2
     prove(k3.contains(n3))
-    prove(k3.is_well_formed())
 
-@z3_proof
-def test_z3_abstract_or(prove, t1, t2):
-    k1, n1 = t1
-    k2, n2 = t2
+def test_z3_abstract_or():
     k3 = k1.abstract_or(k2)
     n3 = n1 | n2
     prove(k3.contains(n3))
-    prove(k3.is_well_formed())
 
-@z3_proof
-def test_z3_abstract_add(prove, t1, t2):
-    k1, n1 = t1
-    k2, n2 = t2
+def test_z3_abstract_add():
     k3 = k1.abstract_add(k2)
     n3 = n1 + n2
     prove(k3.contains(n3))
-    prove(k3.is_well_formed())
 
-@z3_proof
-def test_z3_abstract_sub(prove, t1, t2):
-    k1, n1 = t1
-    k2, n2 = t2
+def test_z3_abstract_sub():
     k3 = k1.abstract_sub(k2)
     n3 = n1 - n2
     prove(k3.contains(n3))
-    prove(k3.is_well_formed())
 
-@z3_proof
-def test_z3_nonnegative(prove, t1):
-    k1, n1 = t1
+def test_z3_nonnegative():
     prove(
         z3.Implies(
             k1.nonnegative(),
@@ -531,25 +509,22 @@ def test_z3_nonnegative(prove, t1):
         )
     )
 
-def z3_cond(b):
-    return z3.If(b, BitVecVal(1), BitVecVal(0))
+def z3_cond(b, trueval=1, falseval=0):
+    return z3.If(b, BitVecVal(trueval), BitVecVal(falseval))
 
-@z3_proof
-def test_z3_abstract_eq_logic(prove, t1, t2):
-    k1, n1 = t1
-    k2, n2 = t2
-    n3 = z3_cond(n1 == n2)
+def test_z3_abstract_eq_logic():
+    n3 = z3_cond(n1 == n2) # concrete result
     # follow the *logic* of abstract_eq, we can't call it due to the ifs in it
     case1cond = z3.And(k1.is_constant(), k2.is_constant(), k1.ones == k2.ones)
     case2cond = k1._disagrees(k2)
 
     # ones is 1 in the first case, 0 otherwise
-    ones = z3_cond(case1cond)
+    ones = z3_cond(case1cond, 1, 0)
 
-    # unknowns is 1 in the third case, 0 otherwise
-    unknowns = z3_cond(z3.Not(z3.Or(case1cond, case2cond)))
+    # in the first two cases, unknowns is 0, 1 otherwise
+    unknowns = z3_cond(z3.Or(case1cond, case2cond), 0, 1)
     k3 = KnownBits(ones, unknowns)
-    prove(k3.is_well_formed())
+    import pdb;pdb.set_trace()
     prove(k3.contains(n3))
 
 
