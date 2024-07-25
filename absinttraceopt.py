@@ -300,6 +300,17 @@ def test_add():
     res = k1.abstract_add(k2)
     assert str(res) ==   "?????01?10"
 
+def test_sub():
+    k1 = KnownBits.from_str('0?10?10?10')
+    k2 = KnownBits.from_str('0???111000')
+    res = k1.abstract_sub(k2)
+    assert str(res) ==   "...?11?10"
+    k1 = KnownBits.from_str(    '...1?10?10?10')
+    k2 = KnownBits.from_str('...10000???111000')
+    res = k1.abstract_sub(k2)
+    assert str(res) ==   "111?????11?10"
+
+
 def test_abstract_eq():
     k1 = KnownBits.from_str('...?')
     k2 = KnownBits.from_str('...?')
@@ -435,42 +446,52 @@ def BitVecVal(val):
 def z3_cond(b):
     return z3.If(b, BitVecVal(1), BitVecVal(0))
 
-def z3_knownbits_condition(var, ones, unknowns):
-    return var & ~unknowns == ones
-
-def z3_int_info(name):
-    """ returns a triple: a z3 variable representing the concrete value, a
-    KnownBits instance with a z3 variables as ones and unknowns, a z3 boolean
-    formula that "glues" the two together """
-    ones = BitVec(f"{name}_ones")
-    unknowns = BitVec(f"{name}_unknowns")
-    info = KnownBits(ones, unknowns)
-    var = BitVec(f"{name}_concrete")
-    return var, info, z3.And(info.is_well_formed(), info.contains(var))
-
-def prove_implies(*args):
-    # the last argument is what is implied
+def z3_proof(test_func):
     solver = z3.Solver()
-    lhs = z3.And(*args[:-1])
-    rhs = args[-1]
-    cond = z3.Not(z3.Implies(lhs, rhs))
-    res = solver.check(cond)
-    if res == z3.unsat:
-        return
-    else:
-        assert res == z3.sat
-        global model
-        model = solver.model()
-        raise ValueError(solver.model())
 
-def test_z3_abstract_invert():
-    selfvar, selfinfo, selfcond = z3_int_info('self')
-    res = ~selfvar
-    resinfo = selfinfo.abstract_invert()
-    prove_implies(
-        selfcond,
-        z3.And(resinfo.is_well_formed(), resinfo.contains(res)),
-    )
+    def z3_int_info(name):
+        ones = BitVec(f"{name}_ones")
+        unknowns = BitVec(f"{name}_unknowns")
+        info = KnownBits(ones, unknowns)
+        var = BitVec(f"{name}_concrete")
+        solver.add(info.is_well_formed())
+        solver.add(info.contains(var))
+        return info, var
+
+    def prove(cond):
+        z3res = solver.check(z3.Not(cond))
+        if z3res == z3.unsat:
+            return True
+        else:
+            assert res == z3.sat
+            global model
+            model = solver.model()
+            raise ValueError(solver.model())
+
+    num_tuple_args = test_func.__code__.co_argcount - 1
+    args = [z3_int_info(f"arg_{index}") for index in range(num_tuple_args)]
+
+    def hypothesis_prove(b):
+        assert b
+
+    hypothesis_test_func = given(strategies.just(hypothesis_prove),
+                                 *(knownbits_and_contained_number, )*num_tuple_args)(test_func)
+
+    def wrapped_():
+        hypothesis_test_func()
+        return test_func(prove, *args)
+
+    wrapped_.__name__ += test_func.__name__
+    return wrapped_
+
+@z3_proof
+def test_z3_abstract_invert(prove, t1):
+    k1, n1 = t1
+    k2 = k1.abstract_invert()
+    n2 = ~n1
+    print(k1.ones, k1.unknowns, k2.ones, k2.unknowns, n1, n2)
+    prove(k2.contains(n2))
+    prove(k2.is_well_formed())
 
 def test_z3_abstract_and():
     selfvar, selfinfo, selfcond = z3_int_info('self')
