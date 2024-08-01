@@ -6,88 +6,6 @@ from dataclasses import dataclass
 from typing import Optional, Any
 
 
-class Value:
-    def find(self):
-        raise NotImplementedError("abstract")
-
-    def extract(self):
-        raise NotImplementedError("abstract")
-
-@dataclass(eq=False)
-class Operation(Value):
-    name : str
-    args : list[Value]
-
-    forwarded : Optional[Value] = None
-
-    def find(self) -> Value:
-        op = self
-        while isinstance(op, Operation):
-            next = op.forwarded
-            if next is None:
-                return op
-            op = next
-        return op
-
-    def arg(self, index):
-        return self.args[index].find()
-
-    def make_equal_to(self, value : Value):
-        self.find().forwarded = value
-
-    def extract(self):
-        return Operation(self.name, [arg.find for arg in self.args])
-
-    def extract(self):
-        raise NotImplementedError("abstract")
-
-@dataclass(eq=False)
-class Constant(Value):
-    value : object
-
-    def find(self):
-        return self
-
-class Block(list):
-    def __getattr__(self, opname):
-        def wraparg(arg):
-            if not isinstance(arg, Value):
-                arg = Constant(arg)
-            return arg
-        def make_op(*args):
-            op = Operation(opname,
-                [wraparg(arg) for arg in args])
-            self.append(op)
-            return op
-        return make_op
-
-    def emit(self, op):
-        self.append(op.extract())
-        
-
-def bb_to_str(l : Block, varprefix : str = "var"):
-    def arg_to_str(arg : Value):
-        if isinstance(arg, Constant):
-            return str(arg.value)
-        else:
-            return varnames[arg]
-
-    varnames = {}
-    res = []
-    for index, op in enumerate(l):
-        # give the operation a name used while
-        # printing:
-        var =  f"{varprefix}{index}"
-        varnames[op] = var
-        arguments = ", ".join(
-            arg_to_str(op.arg(i))
-                for i in range(len(op.args))
-        )
-        strop = f"{var} = {op.name}({arguments})"
-        res.append(strop)
-    return "\n".join(res)
-
-
 # start an abstract value that uses "known bits"
 
 @dataclass(eq=False)
@@ -141,6 +59,12 @@ class KnownBits:
             elif c == '?':
                 unknowns |= 1
         return KnownBits(ones, unknowns)
+
+    @staticmethod
+    def unknown():
+        """ convenience constructor for the "all bits unknown" abstract value
+        """
+        return KnownBits.from_str("...?")
 
     @property
     def knowns(self):
@@ -197,7 +121,7 @@ class KnownBits:
             res.append('0')
         res.reverse()
         return "".join(res)
-            
+
     def contains(self, value : int):
         """ Check whether the KnownBits instance contains the concrete integer
         `value`. """
@@ -465,7 +389,7 @@ def prove(cond):
         assert z3res == z3.sat # can't be timeout, we set no timeout
         # make the counterexample global, to make inspecting the bug in pdb
         # easier
-        global model 
+        global model
         model = solver.model()
         print(f"n1={model.eval(n1)}, n2={model.eval(n2)}")
         counter_example_k1 = KnownBits(model.eval(k1.ones).as_signed_long(),
@@ -603,11 +527,11 @@ def test_match():
     match op:
         case Operation2("add", Constant(a), Constant(b)):
             print(a, b)
-            assert a 
+            assert a
         case _:
             1/0
 
-    
+
     x = Operation("getarg", [Constant(0)])
     op1 = Operation2("add", [x, Constant(2)])
     op2 = Operation2("add", [Constant(4), op1])
@@ -617,4 +541,140 @@ def test_match():
         case _:
             newop = op2
     assert newop is not op2
+
+
+# __________________________________________________________
+# finally actually some trace operations `:-)
+
+
+class Value:
+    def find(self):
+        raise NotImplementedError("abstract")
+
+    def extract(self):
+        raise NotImplementedError("abstract")
+
+@dataclass(eq=False)
+class Operation(Value):
+    name : str
+    args : list[Value]
+
+    forwarded : Optional[Value] = None
+
+    def find(self) -> Value:
+        op = self
+        while isinstance(op, Operation):
+            next = op.forwarded
+            if next is None:
+                return op
+            op = next
+        return op
+
+    def arg(self, index):
+        return self.args[index].find()
+
+    def make_equal_to(self, value : Value):
+        self.find().forwarded = value
+
+    def extract(self):
+        return Operation(self.name, [arg.find for arg in self.args])
+
+    def extract(self):
+        raise NotImplementedError("abstract")
+
+@dataclass(eq=False)
+class Constant(Value):
+    value : object
+
+    def find(self):
+        return self
+
+class Block(list):
+    def __getattr__(self, opname):
+        def wraparg(arg):
+            if not isinstance(arg, Value):
+                arg = Constant(arg)
+            return arg
+        def make_op(*args):
+            op = Operation(opname,
+                [wraparg(arg) for arg in args])
+            self.append(op)
+            return op
+        return make_op
+
+    def emit(self, op):
+        self.append(op.extract())
+
+
+def bb_to_str(l : Block, varprefix : str = "var"):
+    def arg_to_str(arg : Value):
+        if isinstance(arg, Constant):
+            return str(arg.value)
+        else:
+            return varnames[arg]
+
+    varnames = {}
+    res = []
+    for index, op in enumerate(l):
+        # give the operation a name used while
+        # printing:
+        var =  f"{varprefix}{index}"
+        varnames[op] = var
+        arguments = ", ".join(
+            arg_to_str(op.arg(i))
+                for i in range(len(op.args))
+        )
+        strop = f"{var} = {op.name}({arguments})"
+        res.append(strop)
+    return "\n".join(res)
+
+def unknown_transfer_functions(*args):
+    return KnownBits.unknown()
+
+def simplify(bb: Block) -> Block:
+    parity = {}
+
+    def parity_of(val : Value):
+        if isinstance(val, Constant):
+            return KnownBits.from_constant(val.value)
+        return parity[val]
+
+    opt_bb = Block()
+    for op in bb:
+        _, _, name_without_prefix = op.name.rpartition("int_")
+        transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
+        args = [parity_of(arg.find()) for arg in op.args]
+        abstract_res = parity[op] = transfer_function(*args)
+        if abstract_res.is_constant():
+            op.make_equal_to(Constant(abstract_res.ones))
+        else:
+            opt_bb.append(op)
+    return opt_bb
+
+
+def test_constfold_two_ops():
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.int_add(5, 4)
+    var2 = bb.int_add(var1, 10)
+    var3 = bb.int_add(var2, var0)
+
+    opt_bb = simplify(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = int_add(19, optvar0)"""
+
+
+def test_constfold_via_knownbits():
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.int_or(var0, 1)
+    var2 = bb.int_and(var1, 1)
+    var3 = bb.dummy(var2)
+
+    opt_bb = simplify(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = int_or(optvar0, 1)
+optvar2 = dummy(1)"""
 
