@@ -446,8 +446,7 @@ def test_z3_nonnegative():
 def z3_cond(b, trueval=1, falseval=0):
     return z3.If(b, BitVecVal(trueval), BitVecVal(falseval))
 
-def test_z3_abstract_eq_logic():
-    n3 = z3_cond(n1 == n2) # concrete result
+def z3_abstract_eq(k1, k2):
     # follow the *logic* of abstract_eq, we can't call it due to the ifs in it
     case1cond = z3.And(k1.is_constant(), k2.is_constant(), k1.ones == k2.ones)
     case2cond = k1._disagrees(k2)
@@ -457,7 +456,11 @@ def test_z3_abstract_eq_logic():
 
     # in the first two cases, unknowns is 0, 1 otherwise
     unknowns = z3_cond(z3.Or(case1cond, case2cond), 0, 1)
-    k3 = KnownBits(ones, unknowns)
+    return KnownBits(ones, unknowns)
+
+def test_z3_abstract_eq_logic():
+    n3 = z3_cond(n1 == n2) # concrete result
+    k3 = z3_abstract_eq(k1, k2)
     prove(k3.contains(n3))
 
 def test_z3_prove_constant_folding():
@@ -477,36 +480,52 @@ def test_z3_prove_constant_folding():
     prove(z3.Implies(z3.And(k1.is_constant(), k2.is_constant()),
                      k3.is_constant()))
 
+    k3 = z3_abstract_eq(k1, k2)
+    prove(z3.Implies(z3.And(k1.is_constant(), k2.is_constant()),
+                     k3.is_constant()))
+
 @given(random_knownbits_and_contained_number, random_knownbits_and_contained_number)
 @settings(deadline=None)
 def test_check_precision(t1, t2):
     b1, n1 = t1
     b2, n2 = t2
+    # apply transfer function
     b3 = b1.abstract_add(b2)
     example_res = n1 + n2
-    ones = BitVec('ones')
-    unknowns = BitVec('unknowns')
+
+    # try to find a better version of b3 with Z3
     solver = z3.Solver()
-    solver.set("timeout", 800)
+    solver.set("timeout", 8000)
+
     var1 = BitVec('v1')
     var2 = BitVec('v2')
-    formula1 = b1.contains(var1)
-    formula2 = b2.contains(var2)
 
+    ones = BitVec('ones')
+    unknowns = BitVec('unknowns')
     better_b3 = KnownBits(ones, unknowns)
     import gc
     gc.collect()
     print(b1, b2, b3)
 
+    # we're trying to find an example for a better b3, so we use check, without
+    # negation:
     res = solver.check(z3.And(
+        # better_b3 should be a valid knownbits instance
         better_b3.is_well_formed(),
+        # it should be better than b3, ie there are known bits in better_b3
+        # that we don't have in b3
         better_b3.knowns & ~b3.knowns != 0,
-        better_b3.contains(example_res),
+        # now encode the correctness condition for better_b3 with a ForAll:
+        # for all concrete values var1 and var2, it must hold that if
+        # var1 is in b1 and var2 is in b2 it follows that var1 + var2 is in
+        # better_b3
         z3.ForAll(
         [var1, var2],
         z3.Implies(
-            z3.And(formula1, formula2),
+            z3.And(b1.contains(var1), b2.contains(var2)),
             better_b3.contains(var1 + var2)))))
+    # if this query is satisfiable, we have found a better result for the
+    # abstract_and
     if res == z3.sat:
         model = solver.model()
         rb3 = KnownBits(model.eval(ones).as_signed_long(), model.eval(unknowns).as_signed_long())
@@ -514,7 +533,6 @@ def test_check_precision(t1, t2):
         assert 0
     if res == z3.unknown:
         print("timeout")
-    assert res != z3.sat
 
 
 def test_match():
