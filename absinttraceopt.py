@@ -681,9 +681,9 @@ def simplify(bb: Block) -> Block:
         # it equal to the constant result
         if abstract_res.is_constant():
             op.make_equal_to(Constant(abstract_res.ones))
-        else:
-            # otherwise emit the op
-            opt_bb.append(op)
+            continue
+        # otherwise emit the op
+        opt_bb.append(op)
     return opt_bb
 
 
@@ -749,6 +749,7 @@ def simplify2(bb: Block) -> Block:
         transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
         args = [knownbits_of(arg.find()) for arg in op.args]
         abstract_res = parity[op] = transfer_function(*args)
+        print(op, " ".join(str(a) for a in args), "->", abstract_res)
         if abstract_res.is_constant():
             op.make_equal_to(Constant(abstract_res.ones))
             continue
@@ -781,8 +782,11 @@ def test_remove_redundant_and_more_complex():
     bb = Block()
     var0 = bb.getarg(0)
     var1 = bb.getarg(1)
+    # var2 has bit pattern ????
     var2 = bb.int_and(var0, 0b1111)
+    # var3 has bit pattern ...?1111
     var3 = bb.int_or(var1, 0b1111)
+    # var4 is just var2
     var4 = bb.int_and(var2, var3)
     var5 = bb.dummy(var4)
 
