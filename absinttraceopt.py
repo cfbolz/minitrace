@@ -61,7 +61,7 @@ class KnownBits:
         return KnownBits(ones, unknowns)
 
     @staticmethod
-    def unknown():
+    def all_unknown():
         """ convenience constructor for the "all bits unknown" abstract value
         """
         return KnownBits.from_str("...?")
@@ -657,25 +657,32 @@ def bb_to_str(l : Block, varprefix : str = "var"):
     return "\n".join(res)
 
 def unknown_transfer_functions(*args):
-    return KnownBits.unknown()
+    return KnownBits.all_unknown()
 
 def simplify(bb: Block) -> Block:
-    parity = {}
+    abstract_values = {} # dict mapping Operation to KnownBits
 
     def knownbits_of(val : Value):
         if isinstance(val, Constant):
             return KnownBits.from_constant(val.value)
-        return parity[val]
+        return abstract_values[val]
 
     opt_bb = Block()
     for op in bb:
-        _, _, name_without_prefix = op.name.rpartition("int_")
-        transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
+        # apply the transfer function on the abstract arguments
+        if op.name.startswith("int_"):
+            intopname = op.name[4:]
+            transfer_function = getattr(KnownBits, f"abstract_{intopname}")
+        else:
+            transfer_function = unknown_transfer_functions
         args = [knownbits_of(arg.find()) for arg in op.args]
-        abstract_res = parity[op] = transfer_function(*args)
+        abstract_res = abstract_values[op] = transfer_function(*args)
+        # if the result is a constant, we optimize the operation away and make
+        # it equal to the constant result
         if abstract_res.is_constant():
             op.make_equal_to(Constant(abstract_res.ones))
         else:
+            # otherwise emit the op
             opt_bb.append(op)
     return opt_bb
 
@@ -710,11 +717,15 @@ def test_constfold_alignment_check():
     bb = Block()
     var0 = bb.getarg(0)
     var1 = bb.int_invert(0b1111)
-    var2 = bb.int_and(var0, var1) # mask off the lowest four bits, thus var2 is aligned
-    var3 = bb.int_add(var2, 16) # add 16 to aligned quantity
-    var4 = bb.int_and(var3, 0b1111) # check alignment of result
+    # mask off the lowest four bits, thus var2 is aligned
+    var2 = bb.int_and(var0, var1)
+    # add 16 to aligned quantity
+    var3 = bb.int_add(var2, 16)
+    # check alignment of result
+    var4 = bb.int_and(var3, 0b1111)
     var5 = bb.int_eq(var4, 0)
-    var6 = bb.dummy(var5) # var5 should be const-folded to 1
+    # var5 should be const-folded to 1
+    var6 = bb.dummy(var5)
 
     opt_bb = simplify(bb)
     assert bb_to_str(opt_bb, "optvar") == """\
