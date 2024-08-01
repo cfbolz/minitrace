@@ -179,6 +179,16 @@ class KnownBits:
     def nonnegative(self):
         return (self.ones | self.unknowns) >= 0
 
+    def is_and_identity(self, other):
+        """ Return True if n1 & n2 == n1 for any n1 in self and n2 in other.
+        (or, equivalently, return True if n1 | n2 == n2)"""
+        # for a single bit: x & 1 == x
+        #                   0 & anything == 0
+        # for or:           1 | anything == 1
+        #                   x | 0 == x
+        return other.ones | self.zeros == -1
+
+
 
 # unit tests
 
@@ -634,7 +644,7 @@ def unknown_transfer_functions(*args):
 def simplify(bb: Block) -> Block:
     parity = {}
 
-    def parity_of(val : Value):
+    def knownbits_of(val : Value):
         if isinstance(val, Constant):
             return KnownBits.from_constant(val.value)
         return parity[val]
@@ -643,7 +653,7 @@ def simplify(bb: Block) -> Block:
     for op in bb:
         _, _, name_without_prefix = op.name.rpartition("int_")
         transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
-        args = [parity_of(arg.find()) for arg in op.args]
+        args = [knownbits_of(arg.find()) for arg in op.args]
         abstract_res = parity[op] = transfer_function(*args)
         if abstract_res.is_constant():
             op.make_equal_to(Constant(abstract_res.ones))
@@ -678,3 +688,130 @@ optvar0 = getarg(0)
 optvar1 = int_or(optvar0, 1)
 optvar2 = dummy(1)"""
 
+def test_constfold_alignment_check():
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.int_invert(0b1111)
+    var2 = bb.int_and(var0, var1) # mask off the lowest four bits, thus var2 is aligned
+    var3 = bb.int_add(var2, 16) # add 16 to aligned quantity
+    var4 = bb.int_and(var3, 0b1111) # check alignment of result
+    var5 = bb.int_eq(var4, 0)
+    var6 = bb.dummy(var5) # var5 should be const-folded to 1
+
+    opt_bb = simplify(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = int_and(optvar0, -16)
+optvar2 = int_add(optvar1, 16)
+optvar3 = dummy(1)"""
+
+
+def simplify2(bb: Block) -> Block:
+    parity = {}
+
+    def knownbits_of(val : Value):
+        if isinstance(val, Constant):
+            return KnownBits.from_constant(val.value)
+        return parity[val]
+
+    opt_bb = Block()
+    for op in bb:
+        _, _, name_without_prefix = op.name.rpartition("int_")
+        transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
+        args = [knownbits_of(arg.find()) for arg in op.args]
+        abstract_res = parity[op] = transfer_function(*args)
+        if abstract_res.is_constant():
+            op.make_equal_to(Constant(abstract_res.ones))
+            continue
+        if op.name == "int_and":
+            k1, k2 = args
+            if k1.is_and_identity(k2):
+                op.make_equal_to(op.arg(0))
+                continue
+        opt_bb.append(op)
+    return opt_bb
+
+def test_prove_is_and_identity():
+    prove(z3.Implies(k1.is_and_identity(k2), n1 & n2 == n1))
+
+def test_remove_redundant_and():
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.int_invert(0b1111)
+    var2 = bb.int_and(var0, var1) # mask off the lowest four bits
+    var3 = bb.int_and(var2, var1) # applying the same mask is not necessary
+    var4 = bb.dummy(var3)
+
+    opt_bb = simplify2(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = int_and(optvar0, -16)
+optvar2 = dummy(optvar1)"""
+
+def test_remove_redundant_and_more_complex():
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.getarg(1)
+    var2 = bb.int_and(var0, 0b1111)
+    var3 = bb.int_or(var1, 0b1111)
+    var4 = bb.int_and(var2, var3)
+    var5 = bb.dummy(var4)
+
+    opt_bb = simplify2(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = getarg(1)
+optvar2 = int_and(optvar0, 15)
+optvar3 = int_or(optvar1, 15)
+optvar4 = dummy(optvar2)"""
+
+
+def simplify3(bb: Block) -> Block:
+    parity = {}
+
+    def knownbits_of(val : Value):
+        if isinstance(val, Constant):
+            return KnownBits.from_constant(val.value)
+        return parity[val]
+
+    opt_bb = Block()
+    for op in bb:
+        _, _, name_without_prefix = op.name.rpartition("int_")
+        transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
+        args = [knownbits_of(arg.find()) for arg in op.args]
+        abstract_res = parity[op] = transfer_function(*args)
+        if abstract_res.is_constant():
+            op.make_equal_to(Constant(abstract_res.ones))
+            continue
+        if op.name == "int_and":
+            k1, k2 = args
+            if k1.is_and_identity(k2):
+                op.make_equal_to(op.arg(0))
+                continue
+        if op.name == "int_or":
+            k1, k2 = args
+            if k2.is_and_identity(k1):
+                op.make_equal_to(op.arg(0))
+                continue
+        opt_bb.append(op)
+    return opt_bb
+
+def test_prove_is_or_identity_vs_is_and_identity():
+    prove((n1 | n2 == n1) == (n1 & n2 == n2))
+
+def test_remove_redundant_or():
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.getarg(1)
+    var2 = bb.int_and(var0, 0b1111)
+    var3 = bb.int_or(var1, 0b1111)
+    var4 = bb.int_or(var3, var2)
+    var5 = bb.dummy(var4)
+
+    opt_bb = simplify3(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = getarg(1)
+optvar2 = int_and(optvar0, 15)
+optvar3 = int_or(optvar1, 15)
+optvar4 = dummy(optvar3)"""
