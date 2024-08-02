@@ -579,9 +579,6 @@ class Value:
     def find(self):
         raise NotImplementedError("abstract")
 
-    def extract(self):
-        raise NotImplementedError("abstract")
-
 @dataclass(eq=False)
 class Operation(Value):
     name : str
@@ -604,12 +601,6 @@ class Operation(Value):
     def make_equal_to(self, value : Value):
         self.find().forwarded = value
 
-    def extract(self):
-        return Operation(self.name, [arg.find for arg in self.args])
-
-    def extract(self):
-        raise NotImplementedError("abstract")
-
 @dataclass(eq=False)
 class Constant(Value):
     value : object
@@ -629,9 +620,6 @@ class Block(list):
             self.append(op)
             return op
         return make_op
-
-    def emit(self, op):
-        self.append(op.extract())
 
 
 def bb_to_str(l : Block, varprefix : str = "var"):
@@ -670,13 +658,11 @@ def simplify(bb: Block) -> Block:
     opt_bb = Block()
     for op in bb:
         # apply the transfer function on the abstract arguments
-        if op.name.startswith("int_"):
-            intopname = op.name[4:]
-            transfer_function = getattr(KnownBits, f"abstract_{intopname}")
-        else:
-            transfer_function = unknown_transfer_functions
-        args = [knownbits_of(arg.find()) for arg in op.args]
-        abstract_res = abstract_values[op] = transfer_function(*args)
+        name_without_prefix = op.name.removeprefix("int_")
+        method_name = f"abstract_{name_without_prefix}"
+        transfer_function = getattr(KnownBits, method_name, unknown_transfer_functions)
+        abstract_args = [knownbits_of(arg.find()) for arg in op.args]
+        abstract_res = abstract_values[op] = transfer_function(*abstract_args)
         # if the result is a constant, we optimize the operation away and make
         # it equal to the constant result
         if abstract_res.is_constant():
@@ -736,25 +722,24 @@ optvar3 = dummy(1)"""
 
 
 def simplify2(bb: Block) -> Block:
-    parity = {}
+    abstract_values = {} # dict mapping Operation to KnownBits
 
     def knownbits_of(val : Value):
         if isinstance(val, Constant):
             return KnownBits.from_constant(val.value)
-        return parity[val]
+        return abstract_values[val]
 
     opt_bb = Block()
     for op in bb:
-        _, _, name_without_prefix = op.name.rpartition("int_")
+        name_without_prefix = op.name.removeprefix("int_")
         transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
-        args = [knownbits_of(arg.find()) for arg in op.args]
-        abstract_res = parity[op] = transfer_function(*args)
-        print(op, " ".join(str(a) for a in args), "->", abstract_res)
+        abstract_args = [knownbits_of(arg.find()) for arg in op.args]
+        abstract_res = abstract_values[op] = transfer_function(*abstract_args)
         if abstract_res.is_constant():
             op.make_equal_to(Constant(abstract_res.ones))
             continue
         if op.name == "int_and":
-            k1, k2 = args
+            k1, k2 = abstract_args
             if k1.is_and_identity(k2):
                 op.make_equal_to(op.arg(0))
                 continue
@@ -800,19 +785,19 @@ optvar4 = dummy(optvar2)"""
 
 
 def simplify3(bb: Block) -> Block:
-    parity = {}
+    abstract_values = {}
 
     def knownbits_of(val : Value):
         if isinstance(val, Constant):
             return KnownBits.from_constant(val.value)
-        return parity[val]
+        return abstract_values[val]
 
     opt_bb = Block()
     for op in bb:
-        _, _, name_without_prefix = op.name.rpartition("int_")
+        name_without_prefix = op.name.removeprefix("int_")
         transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
-        args = [knownbits_of(arg.find()) for arg in op.args]
-        abstract_res = parity[op] = transfer_function(*args)
+        abstract_args = [knownbits_of(arg.find()) for arg in op.args]
+        abstract_res = abstract_values[op] = transfer_function(*abstract_args)
         if abstract_res.is_constant():
             op.make_equal_to(Constant(abstract_res.ones))
             continue
