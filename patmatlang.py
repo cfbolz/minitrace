@@ -176,6 +176,7 @@ class Name(BaseAst):
     def __init__(self, name):
         self.name = name
 
+
 class Number(BaseAst):
     def __init__(self, value):
         self.value = value
@@ -188,38 +189,43 @@ class BinOp(Expression):
 
 
 class Add(BinOp):
-    opname = 'int_add'
+    opname = "int_add"
 
 
 class Sub(BinOp):
-    opname = 'int_sub'
+    opname = "int_sub"
 
 
 class Mul(BinOp):
-    opname = 'int_mul'
+    opname = "int_mul"
 
 
 class Div(BinOp):
-    opname = 'int_div'
+    opname = "int_div"
+
 
 class LShift(BinOp):
-    opname = 'int_lshift'
+    opname = "int_lshift"
+
 
 class URShift(BinOp):
-    opname = 'uint_rshift'
+    opname = "uint_rshift"
+
 
 class ARShift(BinOp):
-    opname = 'int_rshift'
+    opname = "int_rshift"
 
 
 # ____________________________________________________________
 # parser
 
 pg = ParserGenerator(
-    alltokens, precedence=[
+    alltokens,
+    precedence=[
         ("left", ["LSHIFT", "ARSHIFT", "URSHIFT"]),
         ("left", ["PLUS", "MINUS"]),
-        ("left", ["MUL", "DIV"])]
+        ("left", ["MUL", "DIV"]),
+    ],
 )
 
 
@@ -466,6 +472,7 @@ mul_lshift: int_mul(x, int_lshift(1, y))
         ]
     )
 
+
 def test_parse_lshift_rshift():
     s = """\
 int_lshift_int_rshift_consts: int_lshift(int_rshift(x, C1), C1)
@@ -473,6 +480,7 @@ int_lshift_int_rshift_consts: int_lshift(int_rshift(x, C1), C1)
     => int_and(x, C)
     """
     ast = parse(s)
+
 
 def generate_commutative_patterns_args(args):
     if not args:
@@ -618,8 +626,10 @@ commutative_ops = {"int_add", "int_mul"}
 
 import z3
 
+
 class CouldNotProve(Exception):
     pass
+
 
 LONG_BIT = 64
 
@@ -629,6 +639,7 @@ FALSEBV = z3.BitVecVal(0, LONG_BIT)
 
 def cond(z3expr):
     return z3.If(z3expr, TRUEBV, FALSEBV)
+
 
 def z3_expression(opname, arg0, arg1=None):
     expr = None
@@ -692,6 +703,7 @@ def z3_expression(opname, arg0, arg1=None):
         assert 0
     return expr, valid
 
+
 def And(*args):
     args = [arg for arg in args if arg is not True]
     if args:
@@ -700,10 +712,12 @@ def And(*args):
         return z3.And(*args)
     return True
 
+
 def Implies(a, b):
     if a is True:
         return b
     return z3.Implies(a, b)
+
 
 class Prover(object):
     def __init__(self):
@@ -739,7 +753,9 @@ class Prover(object):
         if isinstance(pattern, PatternConst):
             res = z3.BitVecVal(pattern.const, LONG_BIT)
             return res, True
-        import pdb;pdb.set_trace()
+        import pdb
+
+        pdb.set_trace()
 
     def convert_expr(self, expr):
         if isinstance(expr, BinOp):
@@ -752,7 +768,9 @@ class Prover(object):
         if isinstance(expr, Number):
             res = z3.BitVecVal(expr.value, LONG_BIT)
             return res, True
-        import pdb;pdb.set_trace()
+        import pdb
+
+        pdb.set_trace()
 
     def check_rule(self, rule):
         lhs, lhsvalid = self.convert_pattern(rule.pattern)
@@ -769,10 +787,12 @@ class Prover(object):
         print(condition)
         assert self.prove(condition)
 
+
 def prove_source(s):
     for rule in parse(s).rules:
         p = Prover()
         p.check_rule(rule)
+
 
 def test_z3_prove():
     s = """\
@@ -815,7 +835,10 @@ int_or_minus_1: int_or(x, -1)
     => -1
 """
     prove_source(s)
+
+
 # ___________________________________________________________________________
+
 
 class Codegen(object):
     def __init__(self):
