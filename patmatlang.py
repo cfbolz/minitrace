@@ -37,6 +37,9 @@ addtok("PLUS", r"[+]")
 addtok("MINUS", r"[-]")
 addtok("MUL", r"[*]")
 addtok("DIV", r"[/][/]")
+addtok("LSHIFT", r"[<][<]")
+addtok("ARSHIFT", r"[>][>]a")
+addtok("URSHIFT", r"[>][>]u")
 
 addtok("NEWLINE", r"\n")
 
@@ -173,6 +176,10 @@ class Name(BaseAst):
     def __init__(self, name):
         self.name = name
 
+class Number(BaseAst):
+    def __init__(self, value):
+        self.value = value
+
 
 class BinOp(Expression):
     def __init__(self, left, right):
@@ -195,12 +202,24 @@ class Mul(BinOp):
 class Div(BinOp):
     opname = 'int_div'
 
+class LShift(BinOp):
+    opname = 'int_lshift'
+
+class URShift(BinOp):
+    opname = 'uint_rshift'
+
+class ARShift(BinOp):
+    opname = 'int_rshift'
+
 
 # ____________________________________________________________
 # parser
 
 pg = ParserGenerator(
-    alltokens, precedence=[("left", ["PLUS", "MINUS"]), ("left", ["MUL", "DIV"])]
+    alltokens, precedence=[
+        ("left", ["LSHIFT", "ARSHIFT", "URSHIFT"]),
+        ("left", ["PLUS", "MINUS"]),
+        ("left", ["MUL", "DIV"])]
 )
 
 
@@ -274,6 +293,9 @@ def expression_parens(p):
 @pg.production("expression : expression MINUS expression")
 @pg.production("expression : expression MUL expression")
 @pg.production("expression : expression DIV expression")
+@pg.production("expression : expression LSHIFT expression")
+@pg.production("expression : expression URSHIFT expression")
+@pg.production("expression : expression ARSHIFT expression")
 def expression_binop(p):
     left = p[0]
     right = p[2]
@@ -285,6 +307,12 @@ def expression_binop(p):
         return Mul(left, right)
     elif p[1].gettokentype() == "DIV":
         return Div(left, right)
+    elif p[1].gettokentype() == "LSHIFT":
+        return LShift(left, right)
+    elif p[1].gettokentype() == "URSHIFT":
+        return URShift(left, right)
+    elif p[1].gettokentype() == "ARSHIFT":
+        return ARShift(left, right)
     else:
         raise AssertionError("Oops, this should not be possible!")
 
@@ -438,6 +466,13 @@ mul_lshift: int_mul(x, int_lshift(1, y))
         ]
     )
 
+def test_parse_lshift_rshift():
+    s = """\
+int_lshift_int_rshift_consts: int_lshift(int_rshift(x, C1), C1)
+    compute C = (-1 >>a C1) << C1
+    => int_and(x, C)
+    """
+    ast = parse(s)
 
 def generate_commutative_patterns_args(args):
     if not args:
@@ -634,7 +669,7 @@ def z3_expression(opname, arg0, arg1=None):
         expr = arg0 << arg1
         valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
     elif opname == "int_rshift":
-        expr = arg0 << arg1
+        expr = arg0 >> arg1
         valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
     elif opname == "uint_rshift":
         expr = z3.LShR(arg0, arg1)
@@ -682,6 +717,8 @@ class Prover(object):
         elif z3res == z3.unknown:
             return False
         elif z3res == z3.sat:
+            global model
+            model = self.solver.model()
             return False
 
     def _convert_var(self, name):
@@ -712,6 +749,9 @@ class Prover(object):
             return res, And(leftvalid, rightvalid, valid)
         if isinstance(expr, Name):
             return self._convert_var(expr.name)
+        if isinstance(expr, Number):
+            res = z3.BitVecVal(expr.value, LONG_BIT)
+            return res, True
         import pdb;pdb.set_trace()
 
     def check_rule(self, rule):
@@ -723,7 +763,7 @@ class Prover(object):
             if isinstance(el, Compute):
                 expr, exprvalid = self.convert_expr(el.expr)
                 implies_left.append(self._convert_var(el.name)[0] == expr)
-                implies_left.append(exprvalid)
+                implies_right.append(exprvalid)
         condition = Implies(And(*implies_left), And(*implies_right))
         print("checking %s" % rule)
         print(condition)
@@ -754,6 +794,25 @@ sub_add: int_sub(int_add(x, y), y)
 add_reassoc_consts: int_add(int_add(x, C1), C2)
     compute C = C1 + C2
     => int_add(x, C)
+
+int_lshift_int_rshift_consts: int_lshift(int_rshift(x, C1), C1)
+    compute C = (-1 >>a C1) << C1
+    => int_and(x, C)
+
+neg_neg: int_neg(int_neg(x))
+    => x
+
+invert_invert: int_invert(int_invert(x))
+    => x
+
+int_xor_minus_1: int_xor(x, -1)
+    => int_invert(x)
+
+int_and_minus_1: int_and(x, -1)
+    => x
+
+int_or_minus_1: int_or(x, -1)
+    => -1
 """
     prove_source(s)
 # ___________________________________________________________________________
