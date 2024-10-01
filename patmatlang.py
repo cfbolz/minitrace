@@ -181,19 +181,19 @@ class BinOp(Expression):
 
 
 class Add(BinOp):
-    pass
+    opname = 'int_add'
 
 
 class Sub(BinOp):
-    pass
+    opname = 'int_sub'
 
 
 class Mul(BinOp):
-    pass
+    opname = 'int_mul'
 
 
 class Div(BinOp):
-    pass
+    opname = 'int_div'
 
 
 # ____________________________________________________________
@@ -579,6 +579,177 @@ int_sub_zero_neg: int_sub(0, x)
 
 commutative_ops = {"int_add", "int_mul"}
 
+# ___________________________________________________________________________
+
+import z3
+
+class CouldNotProve(Exception):
+    pass
+
+LONG_BIT = 64
+
+TRUEBV = z3.BitVecVal(1, LONG_BIT)
+FALSEBV = z3.BitVecVal(0, LONG_BIT)
+
+
+def cond(z3expr):
+    return z3.If(z3expr, TRUEBV, FALSEBV)
+
+def z3_expression(opname, arg0, arg1=None):
+    expr = None
+    valid = True
+    if opname == "int_add":
+        expr = arg0 + arg1
+    elif opname == "int_sub":
+        expr = arg0 - arg1
+    elif opname == "int_mul":
+        expr = arg0 * arg1
+    elif opname == "int_and":
+        expr = arg0 & arg1
+    elif opname == "int_or":
+        expr = arg0 | arg1
+    elif opname == "int_xor":
+        expr = arg0 ^ arg1
+    elif opname == "int_eq":
+        expr = cond(arg0 == arg1)
+    elif opname == "int_ne":
+        expr = cond(arg0 != arg1)
+    elif opname == "int_lt":
+        expr = cond(arg0 < arg1)
+    elif opname == "int_le":
+        expr = cond(arg0 <= arg1)
+    elif opname == "int_gt":
+        expr = cond(arg0 > arg1)
+    elif opname == "int_ge":
+        expr = cond(arg0 >= arg1)
+    elif opname == "uint_lt":
+        expr = cond(z3.ULT(arg0, arg1))
+    elif opname == "uint_le":
+        expr = cond(z3.ULE(arg0, arg1))
+    elif opname == "uint_gt":
+        expr = cond(z3.UGT(arg0, arg1))
+    elif opname == "uint_ge":
+        expr = cond(z3.UGE(arg0, arg1))
+    elif opname == "int_lshift":
+        expr = arg0 << arg1
+        valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
+    elif opname == "int_rshift":
+        expr = arg0 << arg1
+        valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
+    elif opname == "uint_rshift":
+        expr = z3.LShR(arg0, arg1)
+        valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
+    elif opname == "uint_mul_high":
+        # zero-extend args to 2*LONG_BIT bit, then multiply and extract
+        # highest LONG_BIT bits
+        zarg0 = z3.ZeroExt(LONG_BIT, arg0)
+        zarg1 = z3.ZeroExt(LONG_BIT, arg1)
+        expr = z3.Extract(LONG_BIT * 2 - 1, LONG_BIT, zarg0 * zarg1)
+    elif opname == "int_is_true":
+        expr = cond(arg0 != FALSEBV)
+    elif opname == "int_is_zero":
+        expr = cond(arg0 == FALSEBV)
+    elif opname == "int_neg":
+        expr = -arg0
+    elif opname == "int_invert":
+        expr = ~arg0
+    else:
+        assert 0
+    return expr, valid
+
+def And(*args):
+    args = [arg for arg in args if arg is not True]
+    if args:
+        if len(args) == 1:
+            return args[0]
+        return z3.And(*args)
+    return True
+
+def Implies(a, b):
+    if a is True:
+        return b
+    return z3.Implies(a, b)
+
+class Prover(object):
+    def __init__(self):
+        self.solver = z3.Solver()
+        self.name_to_z3 = {}
+
+    def prove(self, cond):
+        z3res = self.solver.check(z3.Not(cond))
+        if z3res == z3.unsat:
+            return True
+        elif z3res == z3.unknown:
+            return False
+        elif z3res == z3.sat:
+            return False
+
+    def _convert_var(self, name):
+        if name in self.name_to_z3:
+            return self.name_to_z3[name], True
+        res = z3.BitVec(name, LONG_BIT)
+        self.name_to_z3[name] = res
+        return res, True
+
+    def convert_pattern(self, pattern):
+        if isinstance(pattern, PatternOp):
+            args = [self.convert_pattern(arg) for arg in pattern.args]
+            res, valid = z3_expression(pattern.opname, *[arg[0] for arg in args])
+            return res, And(valid, *[arg[1] for arg in args])
+
+        if isinstance(pattern, PatternVar):
+            return self._convert_var(pattern.name)
+        if isinstance(pattern, PatternConst):
+            res = z3.BitVecVal(pattern.const, LONG_BIT)
+            return res, True
+        import pdb;pdb.set_trace()
+
+    def convert_expr(self, expr):
+        if isinstance(expr, BinOp):
+            left, leftvalid = self.convert_expr(expr.left)
+            right, rightvalid = self.convert_expr(expr.right)
+            res, valid = z3_expression(expr.opname, left, right)
+            return res, And(leftvalid, rightvalid, valid)
+        if isinstance(expr, Name):
+            return self._convert_var(expr.name)
+        import pdb;pdb.set_trace()
+
+    def check_rule(self, rule):
+        lhs, lhsvalid = self.convert_pattern(rule.pattern)
+        rhs, rhsvalid = self.convert_pattern(rule.target)
+        implies_left = [lhsvalid]
+        implies_right = [rhsvalid, rhs == lhs]
+        for el in rule.elements:
+            if isinstance(el, Compute):
+                expr, exprvalid = self.convert_expr(el.expr)
+                implies_left.append(self._convert_var(el.name)[0] == expr)
+                implies_left.append(exprvalid)
+        condition = Implies(And(*implies_left), And(*implies_right))
+        print("checking %s" % rule)
+        print(condition)
+        assert self.prove(condition)
+
+def prove_source(s):
+    for rule in parse(s).rules:
+        p = Prover()
+        p.check_rule(rule)
+
+def test_z3_prove():
+    s = """\
+add_zero: int_add(x, 0)
+    => x
+sub_zero: int_sub(x, 0)
+    => x
+sub_x_x: int_sub(x, x)
+    => 0
+sub_add: int_sub(int_add(x, y), y)
+    => x
+add_reassoc_consts: int_add(int_add(x, C1), C2)
+    compute C = C1 + C2
+    => int_add(x, C)
+"""
+    prove_source(s)
+# ___________________________________________________________________________
 
 class Codegen(object):
     def __init__(self):
