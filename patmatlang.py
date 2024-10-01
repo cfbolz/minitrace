@@ -738,12 +738,19 @@ def test_z3_prove():
     s = """\
 add_zero: int_add(x, 0)
     => x
+
 sub_zero: int_sub(x, 0)
     => x
+
+sub_from_zero: int_sub(0, x)
+    => int_neg(x)
+
 sub_x_x: int_sub(x, x)
     => 0
+
 sub_add: int_sub(int_add(x, y), y)
     => x
+
 add_reassoc_consts: int_add(int_add(x, C1), C2)
     compute C = C1 + C2
     => int_add(x, C)
