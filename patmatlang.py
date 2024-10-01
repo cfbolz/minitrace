@@ -22,24 +22,38 @@ def addkeyword(kw):
     addtok(kw.upper(), kw)
 
 
+addkeyword("if")
 addkeyword("compute")
+addkeyword("and")
+addkeyword("or")
 
 addtok("NUMBER", r"[+-]?([1-9]\d*)|0")
 addtok("NAME", r"[a-zA-Z_][a-zA-Z_0-9]*")
+addtok("LSHIFT", r"[<][<]")
+addtok("ARSHIFT", r"[>][>]a")
+addtok("URSHIFT", r"[>][>]u")
 addtok("ARROW", r"=>")
 addtok("LPAREN", r"[(]")
 addtok("RPAREN", r"[)]")
 addtok("COMMA", r"[,]")
+addtok("EQUALEQUAL", r"[=][=]")
 addtok("EQUAL", r"[=]")
 addtok("COLON", r"[:]")
+addtok("DOT", r"[.]")
+addtok("GE", r"[>][=]")
+addtok("GT", r"[>]")
+addtok("LE", r"[<][=]")
+addtok("LT", r"[<]")
+addtok("NE", r"[!=]")
 
 addtok("PLUS", r"[+]")
 addtok("MINUS", r"[-]")
 addtok("MUL", r"[*]")
 addtok("DIV", r"[/][/]")
-addtok("LSHIFT", r"[<][<]")
-addtok("ARSHIFT", r"[>][>]a")
-addtok("URSHIFT", r"[>][>]u")
+addtok("OP_AND", r"[&]")
+addtok("OP_OR", r"[|]")
+addtok("OP_XOR", r"^")
+addtok("INVERT", r"~")
 
 addtok("NEWLINE", r"\n")
 
@@ -187,34 +201,82 @@ class BinOp(Expression):
         self.left = left
         self.right = right
 
+class IntBinOp(BinOp):
+    pass
 
-class Add(BinOp):
+class Add(IntBinOp):
     opname = "int_add"
 
 
-class Sub(BinOp):
+class Sub(IntBinOp):
     opname = "int_sub"
 
 
-class Mul(BinOp):
+class Mul(IntBinOp):
     opname = "int_mul"
 
 
-class Div(BinOp):
+class Div(IntBinOp):
     opname = "int_div"
 
 
-class LShift(BinOp):
+class LShift(IntBinOp):
     opname = "int_lshift"
 
 
-class URShift(BinOp):
+class URShift(IntBinOp):
     opname = "uint_rshift"
 
 
-class ARShift(BinOp):
+class ARShift(IntBinOp):
     opname = "int_rshift"
 
+class OpAnd(IntBinOp):
+    opname = "int_and"
+
+class OpOr(IntBinOp):
+    opname = "int_or"
+
+class OpXor(IntBinOp):
+    opname = "int_xor"
+
+class Eq(IntBinOp):
+    opname = "int_eq"
+
+class Ge(IntBinOp):
+    opname = "int_ge"
+
+class Gt(IntBinOp):
+    opname = "int_gt"
+
+class Le(IntBinOp):
+    opname = "int_le"
+class Lt(IntBinOp):
+    opname = "int_lt"
+class Ne(IntBinOp):
+    opname = "int_ne"
+
+class ShortcutAnd(BinOp):
+    pass
+
+class ShortcutOr(BinOp):
+    pass
+
+class UnaryOp(Expression):
+    def __init__(self, left):
+        self.left = left
+
+class IntUnaryOp(UnaryOp):
+    pass
+
+class Invert(IntUnaryOp):
+    opname = "int_invert"
+
+
+class Attribute(BaseAst):
+    def __init__(self, varname, attrname):
+        self.varname = varname
+        self.attrname = attrname
 
 # ____________________________________________________________
 # parser
@@ -222,6 +284,13 @@ class ARShift(BinOp):
 pg = ParserGenerator(
     alltokens,
     precedence=[
+        ("left", ["OR"]),
+        ("left", ["AND"]),
+        ("left", ["NOT"]),
+        ("left", ["EQUALEQUAL", "GE", "GT", "LE", "LT", "NE"]),
+        ("left", ["OP_OR"]),
+        ("left", ["OP_XOR"]),
+        ("left", ["OP_AND"]),
         ("left", ["LSHIFT", "ARSHIFT", "URSHIFT"]),
         ("left", ["PLUS", "MINUS"]),
         ("left", ["MUL", "DIV"]),
@@ -279,6 +348,10 @@ def elements(p):
 def compute_element(p):
     return Compute(p[1].value, p[3])
 
+@pg.production("element : IF expression")
+def compute_element(p):
+    return If(p[1])
+
 
 @pg.production("expression : NUMBER")
 def expression_number(p):
@@ -294,6 +367,10 @@ def expression_name(p):
 def expression_parens(p):
     return p[1]
 
+@pg.production("expression : INVERT expression")
+def expression_unary(p):
+    return Invert(p[1])
+
 
 @pg.production("expression : expression PLUS expression")
 @pg.production("expression : expression MINUS expression")
@@ -302,6 +379,18 @@ def expression_parens(p):
 @pg.production("expression : expression LSHIFT expression")
 @pg.production("expression : expression URSHIFT expression")
 @pg.production("expression : expression ARSHIFT expression")
+@pg.production("expression : expression AND expression")
+@pg.production("expression : expression OR expression")
+@pg.production("expression : expression OP_AND expression")
+@pg.production("expression : expression OP_OR expression")
+@pg.production("expression : expression OP_XOR expression")
+@pg.production("expression : expression EQUALEQUAL expression")
+@pg.production("expression : expression GE expression")
+@pg.production("expression : expression GT expression")
+@pg.production("expression : expression LE expression")
+@pg.production("expression : expression LT expression")
+@pg.production("expression : expression NE expression")
+@pg.production("expression : NAME DOT NAME")
 def expression_binop(p):
     left = p[0]
     right = p[2]
@@ -319,6 +408,30 @@ def expression_binop(p):
         return URShift(left, right)
     elif p[1].gettokentype() == "ARSHIFT":
         return ARShift(left, right)
+    elif p[1].gettokentype() == "AND":
+        return ShortcutAnd(left, right)
+    elif p[1].gettokentype() == "OR":
+        return ShortcutOr(left, right)
+    elif p[1].gettokentype() == "OP_AND":
+        return OpAnd(left, right)
+    elif p[1].gettokentype() == "OP_OR":
+        return OpOr(left, right)
+    elif p[1].gettokentype() == "OP_XOR":
+        return OpXor(left, right)
+    elif p[1].gettokentype() == "EQUALEQUAL":
+        return Eq(left, right)
+    elif p[1].gettokentype() == "GE":
+        return Ge(left, right)
+    elif p[1].gettokentype() == "GT":
+        return Gt(left, right)
+    elif p[1].gettokentype() == "LE":
+        return Le(left, right)
+    elif p[1].gettokentype() == "LT":
+        return Lt(left, right)
+    elif p[1].gettokentype() == "NE":
+        return Ne(left, right)
+    elif p[1].gettokentype() == "DOT":
+        return Attribute(left.value, right.value)
     else:
         raise AssertionError("Oops, this should not be possible!")
 
@@ -637,7 +750,7 @@ TRUEBV = z3.BitVecVal(1, LONG_BIT)
 FALSEBV = z3.BitVecVal(0, LONG_BIT)
 
 
-def cond(z3expr):
+def z3_cond(z3expr):
     return z3.If(z3expr, TRUEBV, FALSEBV)
 
 
@@ -657,25 +770,25 @@ def z3_expression(opname, arg0, arg1=None):
     elif opname == "int_xor":
         expr = arg0 ^ arg1
     elif opname == "int_eq":
-        expr = cond(arg0 == arg1)
+        expr = z3_cond(arg0 == arg1)
     elif opname == "int_ne":
-        expr = cond(arg0 != arg1)
+        expr = z3_cond(arg0 != arg1)
     elif opname == "int_lt":
-        expr = cond(arg0 < arg1)
+        expr = z3_cond(arg0 < arg1)
     elif opname == "int_le":
-        expr = cond(arg0 <= arg1)
+        expr = z3_cond(arg0 <= arg1)
     elif opname == "int_gt":
-        expr = cond(arg0 > arg1)
+        expr = z3_cond(arg0 > arg1)
     elif opname == "int_ge":
-        expr = cond(arg0 >= arg1)
+        expr = z3_cond(arg0 >= arg1)
     elif opname == "uint_lt":
-        expr = cond(z3.ULT(arg0, arg1))
+        expr = z3_cond(z3.ULT(arg0, arg1))
     elif opname == "uint_le":
-        expr = cond(z3.ULE(arg0, arg1))
+        expr = z3_cond(z3.ULE(arg0, arg1))
     elif opname == "uint_gt":
-        expr = cond(z3.UGT(arg0, arg1))
+        expr = z3_cond(z3.UGT(arg0, arg1))
     elif opname == "uint_ge":
-        expr = cond(z3.UGE(arg0, arg1))
+        expr = z3_cond(z3.UGE(arg0, arg1))
     elif opname == "int_lshift":
         expr = arg0 << arg1
         valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
@@ -692,9 +805,9 @@ def z3_expression(opname, arg0, arg1=None):
         zarg1 = z3.ZeroExt(LONG_BIT, arg1)
         expr = z3.Extract(LONG_BIT * 2 - 1, LONG_BIT, zarg0 * zarg1)
     elif opname == "int_is_true":
-        expr = cond(arg0 != FALSEBV)
+        expr = z3_cond(arg0 != FALSEBV)
     elif opname == "int_is_zero":
-        expr = cond(arg0 == FALSEBV)
+        expr = z3_cond(arg0 == FALSEBV)
     elif opname == "int_neg":
         expr = -arg0
     elif opname == "int_invert":
@@ -704,7 +817,7 @@ def z3_expression(opname, arg0, arg1=None):
     return expr, valid
 
 
-def And(*args):
+def z3_and(*args):
     args = [arg for arg in args if arg is not True]
     if args:
         if len(args) == 1:
@@ -713,7 +826,7 @@ def And(*args):
     return True
 
 
-def Implies(a, b):
+def z3_implies(a, b):
     if a is True:
         return b
     return z3.Implies(a, b)
@@ -723,6 +836,7 @@ class Prover(object):
     def __init__(self):
         self.solver = z3.Solver()
         self.name_to_z3 = {}
+        self.glue_conditions = []
 
     def prove(self, cond):
         z3res = self.solver.check(z3.Not(cond))
@@ -742,11 +856,25 @@ class Prover(object):
         self.name_to_z3[name] = res
         return res, True
 
+    def _convert_attr(self, varname, attrname, ):
+        z3var, _ = self._convert_var(varname)
+        name = "%s.%s" % (varname, attrname)
+        if name in self.name_to_z3:
+            return self.name_to_z3[name], True
+        res = self.name_to_z3[name] = z3.BitVec(name, LONG_BIT)
+        if attrname == 'lower':
+            self.glue_conditions.append(res <= z3var)
+        elif attrname == 'upper':
+            self.glue_conditions.append(z3var <= res)
+        else:
+            assert 0
+        return res
+
     def convert_pattern(self, pattern):
         if isinstance(pattern, PatternOp):
             args = [self.convert_pattern(arg) for arg in pattern.args]
             res, valid = z3_expression(pattern.opname, *[arg[0] for arg in args])
-            return res, And(valid, *[arg[1] for arg in args])
+            return res, z3_and(valid, *[arg[1] for arg in args])
 
         if isinstance(pattern, PatternVar):
             return self._convert_var(pattern.name)
@@ -758,16 +886,34 @@ class Prover(object):
         pdb.set_trace()
 
     def convert_expr(self, expr):
-        if isinstance(expr, BinOp):
+        if isinstance(expr, IntBinOp):
             left, leftvalid = self.convert_expr(expr.left)
             right, rightvalid = self.convert_expr(expr.right)
             res, valid = z3_expression(expr.opname, left, right)
-            return res, And(leftvalid, rightvalid, valid)
+            return res, z3_and(leftvalid, rightvalid, valid)
+        if isinstance(expr, IntUnaryOp):
+            left, leftvalid = self.convert_expr(expr.left)
+            res, valid = z3_expression(expr.opname, left)
+            return res, z3_and(leftvalid, valid)
         if isinstance(expr, Name):
             return self._convert_var(expr.name)
         if isinstance(expr, Number):
             res = z3.BitVecVal(expr.value, LONG_BIT)
             return res, True
+        if isinstance(expr, ShortcutOr):
+            left, leftvalid = self.convert_expr(expr.left)
+            right, rightvalid = self.convert_expr(expr.right)
+            res = z3.If(left == 1, left, right) 
+            return res, z3_and(leftvalid, rightvalid)
+        if isinstance(expr, ShortcutAnd):
+            left, leftvalid = self.convert_expr(expr.left)
+            right, rightvalid = self.convert_expr(expr.right)
+            res = z3.If(left == 1, right, left) 
+            return res, z3_and(leftvalid, rightvalid)
+        if isinstance(expr, Attribute):
+            res = self._convert_attr(expr.varname, expr.attrname)
+            return res, True
+            
         import pdb
 
         pdb.set_trace()
@@ -782,7 +928,14 @@ class Prover(object):
                 expr, exprvalid = self.convert_expr(el.expr)
                 implies_left.append(self._convert_var(el.name)[0] == expr)
                 implies_right.append(exprvalid)
-        condition = Implies(And(*implies_left), And(*implies_right))
+                continue
+            if isinstance(el, If):
+                expr, _ = self.convert_expr(el.expr)
+                implies_left.append(expr == 1)
+                continue
+            import pdb;pdb.set_trace()
+        implies_left.extend(self.glue_conditions)
+        condition = z3_implies(z3_and(*implies_left), z3_and(*implies_right))
         print("checking %s" % rule)
         print(condition)
         assert self.prove(condition)
@@ -815,7 +968,7 @@ add_reassoc_consts: int_add(int_add(x, C1), C2)
     compute C = C1 + C2
     => int_add(x, C)
 
-int_lshift_int_rshift_consts: int_lshift(int_rshift(x, C1), C1)
+lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
     compute C = (-1 >>a C1) << C1
     => int_and(x, C)
 
@@ -825,14 +978,37 @@ neg_neg: int_neg(int_neg(x))
 invert_invert: int_invert(int_invert(x))
     => x
 
-int_xor_minus_1: int_xor(x, -1)
-    => int_invert(x)
+int_or_minus_1: int_or(x, -1)
+    => -1
+
+int_or_x_x: int_or(a, a)
+    => a
+
+int_and_zero: int_and(a, 0)
+    => 0
+
+int_and_x_x: int_and(a, a)
+    => a
 
 int_and_minus_1: int_and(x, -1)
     => x
 
-int_or_minus_1: int_or(x, -1)
-    => -1
+int_and_x_c_in_range: int_and(x, C)
+    if x.lower >= 0 and x.upper <= C & ~(C + 1)
+    => x
+
+xor_x_x: int_xor(a, a)
+    => 0
+
+xor_absorb: int_xor(int_xor(a, b), b)
+    => a
+
+xor_zero: int_xor(a, 0)
+    => a
+
+xor_minus_1: int_xor(x, -1)
+    => int_invert(x)
+
 """
     prove_source(s)
 
