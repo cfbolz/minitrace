@@ -162,7 +162,7 @@ class KnownBits:
     def abstract_eq(self, other):
         # the result is a 0, 1, or ?
 
-        # can only be known equal if they are both constants
+        # if they are both the same constant, they must be equal
         if self.is_constant() and other.is_constant() and self.ones == other.ones:
             return KnownBits.from_constant(1)
         # check whether we have known disagreeing bits, then we know the result
@@ -198,6 +198,14 @@ def test_str():
     assert str(KnownBits(0b101, 0b10)) == '1?1'
     assert str(KnownBits(~0b1111, 0b10)) == '...100?0'
     assert str(KnownBits(1, ~0b1)) == '...?1'
+
+def test_str():
+    assert KnownBits.from_str('0')
+    assert str(KnownBits.from_constant(5)) == '101'
+    assert str(KnownBits(0b101, 0b10)) == '1?1'
+    assert str(KnownBits(~0b1111, 0b10)) == '...100?0'
+    assert str(KnownBits(1, ~0b1)) == '...?1'
+
 
 def test_contains():
     k1 = KnownBits.from_str('1?1')
@@ -432,6 +440,7 @@ def test_z3_abstract_or():
 
 def test_z3_abstract_add():
     solver, k1, n1, k2, n2 = z3_setup_variables()
+    import pdb;pdb.set_trace()
     k3 = k1.abstract_add(k2)
     n3 = n1 + n2
     prove(k3.contains(n3), solver)
@@ -536,7 +545,7 @@ def test_check_precision(t1, t2):
             z3.And(k1.contains(var1), k2.contains(var2)),
             better_k3.contains(var1 + var2)))))
     # if this query is satisfiable, we have found a better result for the
-    # abstract_and
+    # abstract_add
     if res == z3.sat:
         model = solver.model()
         rk3 = KnownBits(model.eval(ones).as_signed_long(), model.eval(unknowns).as_signed_long())
@@ -713,13 +722,13 @@ optvar2 = dummy(1)"""
 def test_constfold_alignment_check():
     bb = Block()
     var0 = bb.getarg(0)
-    var1 = bb.int_invert(0b1111)
-    # mask off the lowest four bits, thus var2 is aligned
+    var1 = bb.int_invert(0b111)
+    # mask off the lowest three bits, thus var2 is aligned
     var2 = bb.int_and(var0, var1)
     # add 16 to aligned quantity
     var3 = bb.int_add(var2, 16)
     # check alignment of result
-    var4 = bb.int_and(var3, 0b1111)
+    var4 = bb.int_and(var3, 0b111)
     var5 = bb.int_eq(var4, 0)
     # var5 should be const-folded to 1
     var6 = bb.dummy(var5)
@@ -727,7 +736,7 @@ def test_constfold_alignment_check():
     opt_bb = simplify(bb)
     assert bb_to_str(opt_bb, "optvar") == """\
 optvar0 = getarg(0)
-optvar1 = int_and(optvar0, -16)
+optvar1 = int_and(optvar0, -8)
 optvar2 = int_add(optvar1, 16)
 optvar3 = dummy(1)"""
 
@@ -862,3 +871,26 @@ optvar1 = getarg(1)
 optvar2 = int_and(optvar0, 15)
 optvar3 = int_or(optvar1, 15)
 optvar4 = dummy(optvar3)"""
+
+def test_z3_uint_mod_zero_opt_logic():
+    import z3
+    INTEGER_WIDTH = 8
+    x, y, inv = z3.BitVecs('x y inv', INTEGER_WIDTH)
+    # slightly complex way to compute ceil(2 ** INTEGER_WIDTH / y) by going to
+    # bitvectors twice the size and computing (2 ** INTEGER_WIDTH + y - 1) / y
+    longpow2 = z3.BitVecVal(2 ** INTEGER_WIDTH, 2 * INTEGER_WIDTH)
+    longy = z3.ZeroExt(INTEGER_WIDTH, y)
+    boundary = z3.Extract(INTEGER_WIDTH - 1, 0, z3.UDiv(longpow2 + longy - 1, longy))
+    solver = z3.Solver()
+    res = solver.check(z3.Not(
+        z3.Implies(
+            z3.And(
+                y > 1, # constant must be > 1
+                y & 1 == 1, # constant must be odd
+                y * inv == 1 # inv must be an inverse of y (mod 2**INTEGER_WIDTH)
+            ),
+            # then we can replace x % y == 0 with x * inv < boundary
+            (z3.URem(x, y) == 0) == z3.ULT(x * inv, boundary)
+        )
+    ))
+    assert res == z3.unsat
