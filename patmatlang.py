@@ -1087,6 +1087,12 @@ sub_from_zero: int_sub(0, x)
 sub_x_x: int_sub(x, x)
     => 0
 
+sub_add_const: int_sub(int_add(x, C), C)
+    => x
+sub_add_consts: int_sub(int_add(x, C1), C2)
+    C = C2 - C1
+    => int_sub(x, C)
+
 sub_add: int_sub(int_add(x, y), y)
     => x
 
@@ -1210,12 +1216,23 @@ class Codegen(object):
 
     def generate_code_pattern(self, p, varname, intbound_name):
         if isinstance(p, PatternVar):
-            if p.name not in self.bindings:
-                self.bindings[p.name] = varname
-                return
-            elif varname == self.bindings[p.name]:
-                return
-            return self.emit_stacking_condition("%s is %s" % (varname, self.bindings[p.name]))
+            if p.name.startswith("C"):
+                cname = "C_" + varname
+                if p.name not in self.bindings:
+                    self.emit_stacking_condition("%s.is_constant()" % intbound_name)
+                    self.emit("%s = %s.get_constant_int()" % (cname, intbound_name))
+                    self.bindings[p.name] = cname
+                    return
+                elif cname == self.bindings[p.name]:
+                    return
+                return self.emit_stacking_condition("%s.known_eq_const(%s)" % (intbound_name, self.bindings[p.name]))
+            else:
+                if p.name not in self.bindings:
+                    self.bindings[p.name] = varname
+                    return
+                elif varname == self.bindings[p.name]:
+                    return
+                return self.emit_stacking_condition("%s is %s" % (varname, self.bindings[p.name]))
         elif isinstance(p, PatternConst):
             return self.emit_stacking_condition("%s.known_eq_const(%s)" % (intbound_name, p.const))
         if isinstance(p, PatternOp):
@@ -1267,7 +1284,6 @@ class Codegen(object):
         return boxnames, boundnames
 
     def generate_method(self, opname, rules):
-        self.bindings = {}
         with self.emit_indent("def optimize_%s(self, op):" % opname.upper()):
             numargs = len(rules[0].pattern.args)
             boxnames, boundnames = self._emit_arg_reads("arg", "op", numargs)
@@ -1276,6 +1292,7 @@ class Codegen(object):
                 all_rules.extend(generate_commutative_rules(rule))
             all_rules = sort_rules(all_rules)
             for rule in all_rules:
+                self.bindings = {}
                 self.emit("# %s => %s" % (rule.pattern, rule.target))
                 currlevel = self.level
                 checks = []
@@ -1306,6 +1323,9 @@ int_sub_add: int_sub(int_add(x, y), y)
     => x
 int_sub_zero_neg: int_sub(0, x)
     => int_neg(x)
+sub_add_consts: int_sub(int_add(x, C), C) # nonsense rule, but I want to see const matching working
+    => x
+
     """
     codegen = Codegen()
     res = codegen.generate_code(parse(s))
@@ -1324,6 +1344,30 @@ def optimize_INT_SUB(self, op):
     if b_arg_1.known_eq_const(0):
         self.make_equal_to(op, arg_0)
         return
+    # int_sub(int_add(x, C), C) => x
+    arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
+    if arg_0_int_add is not None:
+        arg_0_int_add_0 = get_box_replacement(arg_0.getarg(0))
+        b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
+        arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
+        b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
+        if b_arg_0_int_add_1.is_constant():
+            C_arg_0_int_add_1 = b_arg_0_int_add_1.get_constant_int()
+            if b_arg_1.known_eq_const(C_arg_0_int_add_1):
+                self.make_equal_to(op, arg_0_int_add_0)
+                return
+    # int_sub(int_add(C, x), C) => x
+    arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
+    if arg_0_int_add is not None:
+        arg_0_int_add_0 = get_box_replacement(arg_0.getarg(0))
+        b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
+        arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
+        b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
+        if b_arg_0_int_add_0.is_constant():
+            C_arg_0_int_add_0 = b_arg_0_int_add_0.get_constant_int()
+            if b_arg_1.known_eq_const(C_arg_0_int_add_0):
+                self.make_equal_to(op, arg_0_int_add_1)
+                return
     # int_sub(int_add(x, y), y) => x
     arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
     if arg_0_int_add is not None:
@@ -1331,10 +1375,9 @@ def optimize_INT_SUB(self, op):
         b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
         arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
         b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
-        if arg_0_int_add_0 is arg_0:
-            if arg_1 is arg_0_int_add_1:
-                self.make_equal_to(op, arg_0)
-                return
+        if arg_1 is arg_0_int_add_1:
+            self.make_equal_to(op, arg_0_int_add_0)
+            return
     # int_sub(int_add(y, x), y) => x
     arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
     if arg_0_int_add is not None:
@@ -1342,17 +1385,14 @@ def optimize_INT_SUB(self, op):
         b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
         arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
         b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
-        if arg_0_int_add_0 is arg_0_int_add_1:
-            if arg_0_int_add_1 is arg_0:
-                if arg_1 is arg_0_int_add_1:
-                    self.make_equal_to(op, arg_0)
-                    return
+        if arg_1 is arg_0_int_add_0:
+            self.make_equal_to(op, arg_0_int_add_1)
+            return
     # int_sub(0, x) => int_neg(x)
     if b_arg_0.known_eq_const(0):
-        if arg_1 is arg_0:
-            newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_0])
-            self.optimizer.send_extra_operation(newop)
-            return
+        newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_1])
+        self.optimizer.send_extra_operation(newop)
+        return
 """
 
 
