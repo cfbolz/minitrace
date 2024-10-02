@@ -850,25 +850,30 @@ class Prover(object):
             return False
 
     def _convert_var(self, name):
+        def newvar(name, suffix=''):
+            if suffix:
+                name += "_" + suffix
+            res = z3.BitVec(name, LONG_BIT)
+            self.name_to_z3[name] = res
+            return res
+
         if name in self.name_to_z3:
-            return self.name_to_z3[name], True
-        res = z3.BitVec(name, LONG_BIT)
-        self.name_to_z3[name] = res
-        return res, True
+            return self.name_to_z3[name]
+        res = newvar(name)
+        upper = newvar(name, 'upper')
+        self.glue_conditions.append(res <= upper)
+        lower = newvar(name, 'lower')
+        self.glue_conditions.append(lower <= res)
+        tmask = newvar(name, 'tmask')
+        tvalue = newvar(name, 'tvalue')
+        self.glue_conditions.append(res & ~tmask == tvalue)
+        return res
 
     def _convert_attr(self, varname, attrname, ):
-        z3var, _ = self._convert_var(varname)
-        name = "%s.%s" % (varname, attrname)
-        if name in self.name_to_z3:
-            return self.name_to_z3[name], True
-        res = self.name_to_z3[name] = z3.BitVec(name, LONG_BIT)
-        if attrname == 'lower':
-            self.glue_conditions.append(res <= z3var)
-        elif attrname == 'upper':
-            self.glue_conditions.append(z3var <= res)
-        else:
-            assert 0
-        return res
+        z3var = self._convert_var(varname)
+        name = "%s_%s" % (varname, attrname)
+        assert name in self.name_to_z3
+        return self.name_to_z3[name]
 
     def convert_pattern(self, pattern):
         if isinstance(pattern, PatternOp):
@@ -877,7 +882,7 @@ class Prover(object):
             return res, z3_and(valid, *[arg[1] for arg in args])
 
         if isinstance(pattern, PatternVar):
-            return self._convert_var(pattern.name)
+            return self._convert_var(pattern.name), True
         if isinstance(pattern, PatternConst):
             res = z3.BitVecVal(pattern.const, LONG_BIT)
             return res, True
@@ -896,7 +901,7 @@ class Prover(object):
             res, valid = z3_expression(expr.opname, left)
             return res, z3_and(leftvalid, valid)
         if isinstance(expr, Name):
-            return self._convert_var(expr.name)
+            return self._convert_var(expr.name), True
         if isinstance(expr, Number):
             res = z3.BitVecVal(expr.value, LONG_BIT)
             return res, True
@@ -926,7 +931,7 @@ class Prover(object):
         for el in rule.elements:
             if isinstance(el, Compute):
                 expr, exprvalid = self.convert_expr(el.expr)
-                implies_left.append(self._convert_var(el.name)[0] == expr)
+                implies_left.append(self._convert_var(el.name) == expr)
                 implies_right.append(exprvalid)
                 continue
             if isinstance(el, If):
@@ -995,6 +1000,10 @@ int_and_minus_1: int_and(x, -1)
 
 int_and_x_c_in_range: int_and(x, C)
     if x.lower >= 0 and x.upper <= C & ~(C + 1)
+    => x
+
+int_and_x_y_covered_ones: int_and(x, y)
+    if ~y.tvalue & (x.tmask | x.tvalue) == 0
     => x
 
 xor_x_x: int_xor(a, a)
