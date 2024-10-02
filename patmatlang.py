@@ -612,16 +612,6 @@ mul_minus_one: int_mul(x, -1)
 mul_neg_neg: int_mul(int_neg(x), int_neg(y))
     => int_mul(x, y)
 """
-    """
-mul_pow2_const: int_mul(x, C)
-    check C & (C - 1) == 0
-    shift = highest_bit(C)
-    => int_lshift(x, shift)
-
-mul_lshift: int_mul(x, int_lshift(1, y))
-    check intbound(y).known_ge_const(0) and intbound(y).known_le_const(LONG_BIT)
-    => int_lshift(x, y)
-    """
     ast = parse(s)
     assert ast == File(
         rules=[
@@ -1255,6 +1245,10 @@ class Codegen(object):
         yield
         self.level -= 1
 
+    def emit_stacking_condition(self, cond):
+        self.emit("if %s:" % cond)
+        self.level += 1
+
     def emit(self, line=""):
         if self.level == 0 and line.startswith(("def ", "class ")):
             self.code.append("")
@@ -1264,61 +1258,82 @@ class Codegen(object):
             self.code.append("    " * self.level + line)
 
 
-def generate_code_pattern(p, varname, intbound_name, bindings):
-    if isinstance(p, PatternVar):
-        if p.name not in bindings:
-            bindings[p.name] = varname
-            return "True"
-        else:
-            return "%s is %s" % (varname, bindings[p.name])
-    elif isinstance(p, PatternConst):
-        return "%s.known_eq_const(%s)" % (intbound_name, p.const)
-    import pdb
-
-    pdb.set_trace()
-
-
-def generate_target(target, bindings):
-    if isinstance(target, PatternVar):
-        return "self.make_equal_to(op, %s)" % bindings[target.name]
-    if isinstance(target, PatternConst):
-        return "self.make_constant_int(op, %s)" % target.const
-    if isinstance(target, PatternOp):
-        return
-    import pdb
-
-    pdb.set_trace()
+    def generate_code_pattern(self, p, varname, intbound_name):
+        if isinstance(p, PatternVar):
+            if p.name not in self.bindings:
+                self.bindings[p.name] = varname
+                return
+            elif varname == self.bindings[p.name]:
+                return
+            return self.emit_stacking_condition("%s is %s" % (varname, self.bindings[p.name]))
+        elif isinstance(p, PatternConst):
+            return self.emit_stacking_condition("%s.known_eq_const(%s)" % (intbound_name, p.const))
+        if isinstance(p, PatternOp):
+            boxname = "%s_%s" % (varname, p.opname)
+            self.emit("%s = self.optimizer.as_operation(%s, rop.%s)" % (boxname, varname, p.opname.upper()))
+            self.emit_stacking_condition("%s is not None" % boxname)
+            boxnames, boundnames = self._emit_arg_reads(boxname, varname, len(p.args))
+            self._pattern_arg_check(boxnames, boundnames, p.args)
+            return
+        assert 0
 
 
-def generate_code(ast):
-    per_op = defaultdict(list)
-    for rule in ast.rules:
-        per_op[rule.pattern.opname].append(rule)
-    res = []
-    for opname, rules in per_op.items():
-        res.append("def optimize_%s(self, op):" % opname.upper())
-        numargs = len(rules[0].pattern.args)
+    def generate_target(self, target):
+        if isinstance(target, PatternVar):
+            return "self.make_equal_to(op, %s)" % self.bindings[target.name]
+        if isinstance(target, PatternConst):
+            return "self.make_constant_int(op, %s)" % target.const
+        if isinstance(target, PatternOp):
+            import pdb;pdb.set_trace()
+            return
+        import pdb
+
+        pdb.set_trace()
+
+    def _pattern_arg_check(self, boxnames, boundnames, args):
+        for i, p in enumerate(args):
+            self.generate_code_pattern(p, boxnames[i], boundnames[i])
+
+    def _emit_arg_reads(self, prefix, opname, numargs):
+        boxnames = []
+        boundnames = []
         for i in range(numargs):
-            res.append("    arg%s = get_box_replacement(op.getarg(%s))" % (i, i))
-            res.append("    b%s = self.getintbound(arg%s)" % (i, i))
-        for rule in rules:
-            bindings = {}
-            patterncomp = " and ".join(
-                [
-                    "(" + generate_code_pattern(p, "a%s" % i, "b%s" % i, bindings) + ")"
-                    for i, p in enumerate(rule.pattern.args)
-                ]
-            )
-            targetcomp = generate_target(rule.target, bindings)
-            res.append("    if %s:" % patterncomp)
-            res.append("        %s" % targetcomp)
-            res.append("        return")
-    import pdb
+            boxname = "%s_%s" % (prefix, i)
+            boundname = "b_" + boxname
+            boxnames.append(boxname)
+            boundnames.append(boundname)
+            self.emit("%s = get_box_replacement(%s.getarg(%s))" % (boxname, opname, i))
+            self.emit("%s = self.getintbound(%s)" % (boundname, boxname))
+        return boxnames, boundnames
 
-    pdb.set_trace()
+    def generate_method(self, opname, rules):
+        self.bindings = {}
+        with self.emit_indent("def optimize_%s(self, op):" % opname.upper()):
+            numargs = len(rules[0].pattern.args)
+            boxnames, boundnames = self._emit_arg_reads("arg", "op", numargs)
+            for rule in rules:
+                self.emit("# %s => %s" % (rule.pattern, rule.target))
+                currlevel = self.level
+                checks = []
+                self._pattern_arg_check(boxnames, boundnames, rule.pattern.args)
+                for el in rule.elements:
+                    assert 0
+                targetcomp = self.generate_target(rule.target)
+                self.emit("%s" % targetcomp)
+                self.emit("return")
+                self.level = currlevel
+
+    def generate_code(self, ast):
+        per_op = defaultdict(list)
+        for rule in ast.rules:
+            per_op[rule.pattern.opname].append(rule)
+        for opname, rules in per_op.items():
+            self.generate_method(opname, rules)
+        self.emit()
+        return "\n".join(self.code)
 
 
-def xtest_generate_code():
+def test_generate_code():
     s = """\
 int_sub_zero: int_sub(x, 0)
     => x
@@ -1331,7 +1346,34 @@ int_sub_add: int_sub(int_add(x, y), y)
 int_sub_zero_neg: int_sub(0, x)
     => int_neg(x)
     """
-    s = generate_code(parse(s))
+    codegen = Codegen()
+    res = codegen.generate_code(parse(s))
+    assert res == """
+def optimize_INT_SUB(self, op):
+    arg_0 = get_box_replacement(op.getarg(0))
+    b_arg_0 = self.getintbound(arg_0)
+    arg_1 = get_box_replacement(op.getarg(1))
+    b_arg_1 = self.getintbound(arg_1)
+    # int_sub(x, 0) => x
+    if b_arg_1.known_eq_const(0):
+        self.make_equal_to(op, arg_0)
+        return
+    # int_sub(x, x) => 0
+    if arg_1 is arg_0:
+        self.make_constant_int(op, 0)
+        return
+    # int_sub(int_add(x, y), y) => x
+    arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
+    if arg_0_int_add is not None:
+        arg_0_int_add_0 = get_box_replacement(arg_0.getarg(0))
+        b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
+        arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
+        b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
+        if arg_0_int_add_0 is arg_0:
+            if arg_1 is arg_0_int_add_1:
+                self.make_equal_to(op, arg_0)
+                return
+"""
 
 
 def print_class(name, *attrs):
