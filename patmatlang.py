@@ -23,7 +23,7 @@ def addkeyword(kw):
     addtok(kw.upper(), r"\b" + kw + r"\b")
 
 
-addkeyword("if")
+addkeyword("check")
 addkeyword("and")
 addkeyword("or")
 
@@ -196,12 +196,12 @@ class Compute(BaseAst):
         return "compute %s = %s" % (self.name, self.expr)
 
 
-class If(BaseAst):
+class Check(BaseAst):
     def __init__(self, expr):
         self.expr = expr
 
     def __str__(self):
-        return "if %s" % (self.expr,)
+        return "check %s" % (self.expr,)
 
 
 class Expression(BaseAst):
@@ -405,9 +405,9 @@ def compute_element(p):
     return Compute(p[0].value, p[2])
 
 
-@pg.production("element : IF expression")
-def compute_element(p):
-    return If(p[1])
+@pg.production("element : CHECK expression")
+def check(p):
+    return Check(p[1])
 
 
 @pg.production("expression : NUMBER")
@@ -614,12 +614,12 @@ mul_neg_neg: int_mul(int_neg(x), int_neg(y))
 """
     """
 mul_pow2_const: int_mul(x, C)
-    if C & (C - 1) == 0
+    check C & (C - 1) == 0
     shift = highest_bit(C)
     => int_lshift(x, shift)
 
 mul_lshift: int_mul(x, int_lshift(1, y))
-    if intbound(y).known_ge_const(0) and intbound(y).known_le_const(LONG_BIT)
+    check intbound(y).known_ge_const(0) and intbound(y).known_le_const(LONG_BIT)
     => int_lshift(x, y)
     """
     ast = parse(s)
@@ -1102,7 +1102,7 @@ class Prover(object):
                 implies_left.append(self._convert_var(el.name) == expr)
                 implies_right.append(exprvalid)
                 continue
-            if isinstance(el, If):
+            if isinstance(el, Check):
                 expr, _ = self.convert_expr(el.expr, bool)
                 implies_left.append(expr)
                 continue
@@ -1148,9 +1148,9 @@ lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
     => int_and(x, C)
 
 lshift_lshift_c_c: int_lshift(int_lshift(x, C1), C2)
-    if 0 <= C1 and C1 < LONG_BIT and 0 <= C2 < LONG_BIT
+    check 0 <= C1 and C1 < LONG_BIT and 0 <= C2 < LONG_BIT
     C = C1 + C2
-    if C < LONG_BIT
+    check C < LONG_BIT
     => int_lshift(x, C)
 
 neg_neg: int_neg(int_neg(x))
@@ -1178,11 +1178,11 @@ int_and_minus_1: int_and(x, -1)
     => x
 
 int_and_x_c_in_range: int_and(x, C)
-    if x.lower >= 0 and x.upper <= C & ~(C + 1)
+    check x.lower >= 0 and x.upper <= C & ~(C + 1)
     => x
 
 int_and_x_y_covered_ones: int_and(x, y)
-    if ~y.tvalue & (x.tmask | x.tvalue) == 0
+    check ~y.tvalue & (x.tmask | x.tvalue) == 0
     => x
 
 xor_x_x: int_xor(a, a)
@@ -1198,13 +1198,13 @@ xor_minus_1: int_xor(x, -1)
     => int_invert(x)
 
 and_known_result: int_and(a, b)
-    if a.and_bound(b).is_constant()
+    check a.and_bound(b).is_constant()
     C = a.and_bound(b).get_constant_int()
     => C
 
 xor_x_y_sub_y: int_sub(int_xor(x, y), y)
     # (x ^ y) - y == x if x & y == 0
-    if x.and_bound(y).known_eq_const(0)
+    check x.and_bound(y).known_eq_const(0)
     => x
 
 mul_zero: int_mul(x, 0)
@@ -1220,11 +1220,11 @@ mul_neg_neg: int_mul(int_neg(x), int_neg(y))
     => int_mul(x, y)
 
 mul_lshift: int_mul(x, int_lshift(1, y))
-    if y.known_ge_const(0) and y.known_le_const(LONG_BIT)
+    check y.known_ge_const(0) and y.known_le_const(LONG_BIT)
     => int_lshift(x, y)
 
 mul_pow2_const: int_mul(x, C)
-    if C > 0 and C & (C - 1) == 0
+    check C > 0 and C & (C - 1) == 0
     shift = highest_bit(C)
     => int_lshift(x, shift)
 """
