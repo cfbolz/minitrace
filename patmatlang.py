@@ -959,6 +959,7 @@ class Prover(object):
         self.solver = z3.Solver()
         self.name_to_z3 = {}
         self.name_to_intbound = {}
+        self.glue_conditions_added = set()
         self.glue_conditions = []
 
     def prove(self, cond):
@@ -984,17 +985,22 @@ class Prover(object):
             return self.name_to_z3[name]
         res = newvar(name)
         b = make_z3_intbounds_instance(name, res)
-        self.glue_conditions.append(b.z3_formula())
         self.name_to_intbound[name] = b
         return res
+
+    def _convert_intbound(self, name):
+        b = self.name_to_intbound[name]
+        if name not in self.glue_conditions_added:
+            self.glue_conditions.append(b.z3_formula())
+            self.glue_conditions_added.add(name)
+        return b
 
     def _convert_attr(
         self,
         varname,
         attrname,
     ):
-        z3var = self._convert_var(varname)
-        b = self.name_to_intbound[varname]
+        b = self._convert_intbound(varname)
         return getattr(b, attrname)
 
     def convert_pattern(self, pattern):
@@ -1038,7 +1044,8 @@ class Prover(object):
             if targettype is int:
                 return var, True
             if targettype is Z3IntBound:
-                return self.name_to_intbound[expr.name], True
+                b = self._convert_intbound(expr.name)
+                return b, True
             import pdb
 
             pdb.set_trace()
@@ -1174,16 +1181,22 @@ and_zero: int_and(a, 0)
 and_x_x: int_and(a, a)
     => a
 
-int_and_minus_1: int_and(x, -1)
+and_minus_1: int_and(x, -1)
     => x
 
-int_and_x_c_in_range: int_and(x, C)
+and_x_c_in_range: int_and(x, C)
     check x.lower >= 0 and x.upper <= C & ~(C + 1)
     => x
 
-int_and_x_y_covered_ones: int_and(x, y)
+and_x_y_covered_ones: int_and(x, y)
     check ~y.tvalue & (x.tmask | x.tvalue) == 0
     => x
+
+and_known_result: int_and(a, b)
+    check a.and_bound(b).is_constant()
+    C = a.and_bound(b).get_constant_int()
+    => C
+
 
 xor_x_x: int_xor(a, a)
     => 0
@@ -1196,11 +1209,6 @@ xor_zero: int_xor(a, 0)
 
 xor_minus_1: int_xor(x, -1)
     => int_invert(x)
-
-and_known_result: int_and(a, b)
-    check a.and_bound(b).is_constant()
-    C = a.and_bound(b).get_constant_int()
-    => C
 
 xor_x_y_sub_y: int_sub(int_xor(x, y), y)
     # (x ^ y) - y == x if x & y == 0
