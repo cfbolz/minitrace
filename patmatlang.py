@@ -4,6 +4,7 @@ from collections import defaultdict
 from rply import LexerGenerator, LexingError, ParserGenerator, ParsingError
 from rply.token import BaseBox
 
+from rpython.rlib.rarithmetic import LONG_BIT, r_uint, intmask, ovfcheck, uint_mul_high
 
 # ____________________________________________________________
 # lexer
@@ -326,6 +327,12 @@ class MethodCall(BaseAst):
         self.args = args
 
 
+class FuncCall(BaseAst):
+    def __init__(self, funcname, args):
+        self.funcname = funcname
+        self.args = args
+
+
 # ____________________________________________________________
 # parser
 
@@ -491,6 +498,11 @@ def attr_or_method(p):
     if p[3] is not None:
         return MethodCall(p[0], p[2].value, p[3])
     return Attribute(p[0].name, p[2].value)
+
+
+@pg.production("expression : NAME LPAREN args RPAREN")
+def funccall(p):
+    return FuncCall(p[0].value, p[2])
 
 
 @pg.production("maybecall : | LPAREN args RPAREN")
@@ -821,8 +833,6 @@ class CouldNotProve(Exception):
     pass
 
 
-LONG_BIT = 64
-
 TRUEBV = z3.BitVecVal(1, LONG_BIT)
 FALSEBV = z3.BitVecVal(0, LONG_BIT)
 
@@ -917,6 +927,33 @@ def z3_implies(a, b):
         return b
     return z3.Implies(a, b)
 
+def popcount64(w):
+    w -= (w >> 1) & 0x5555555555555555
+    w = (w & 0x3333333333333333) + ((w >> 2) & 0x3333333333333333)
+    w = (w + (w >> 4)) & 0x0f0f0f0f0f0f0f0f
+    return ((w * 0x0101010101010101) >> 56) & 0xff
+
+def highest_bit(x):
+    x |= x >> 1
+    x |= x >> 2
+    x |= x >> 4
+    x |= x >> 8
+    x |= x >> 16
+    x |= x >> 32
+    return popcount64(x) - 1
+
+def z3_highest_bit(x):
+    x |= z3.LShR(x, 1)
+    x |= z3.LShR(x, 2)
+    x |= z3.LShR(x, 4)
+    x |= z3.LShR(x, 8)
+    x |= z3.LShR(x, 16)
+    x |= z3.LShR(x, 32)
+    return popcount64(x) - 1
+
+def test_higest_bit():
+    for i in range(64):
+        assert highest_bit(r_uint(1) << i) == i
 
 class Prover(object):
     def __init__(self):
@@ -992,6 +1029,12 @@ class Prover(object):
             res, valid = z3_expression(expr.opname, left)
             return res, z3_and(leftvalid, valid)
         if isinstance(expr, Name):
+            if expr.name == 'LONG_BIT':
+                return 64, True
+            if expr.name == 'MAXINT':
+                return MAXINT, True
+            if expr.name == 'MININT':
+                return MININT, True
             var = self._convert_var(expr.name)
             if targettype is int:
                 return var, True
@@ -1033,6 +1076,17 @@ class Prover(object):
             return getattr(res, expr.methname)(*methargs), z3_and(
                 resvalid, *[arg[1] for arg in args]
             )
+        if isinstance(expr, FuncCall):
+            targettypes = [int] * len(expr.args)
+            args = [
+                self.convert_expr(arg, typ) for arg, typ in zip(expr.args, targettypes)
+            ]
+            func = globals()['z3_' + expr.funcname]
+            funcargs = [arg[0] for arg in args]
+            return func(*funcargs), z3_and(
+                *[arg[1] for arg in args]
+            )
+
 
         import pdb
 
@@ -1094,22 +1148,31 @@ lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
     compute C = (-1 >>a C1) << C1
     => int_and(x, C)
 
+lshift_lshift_c_c: int_lshift(int_lshift(x, C1), C2)
+    if 0 <= C1 and C1 < LONG_BIT and 0 <= C2 < LONG_BIT
+    compute C = C1 + C2
+    if C < LONG_BIT
+    => int_lshift(x, C)
+
 neg_neg: int_neg(int_neg(x))
     => x
 
 invert_invert: int_invert(int_invert(x))
     => x
 
-int_or_minus_1: int_or(x, -1)
+or_minus_1: int_or(x, -1)
     => -1
 
-int_or_x_x: int_or(a, a)
+or_x_x: int_or(a, a)
     => a
 
-int_and_zero: int_and(a, 0)
+or_absorb: int_or(a, int_or(a, b))
+    => int_or(a, b)
+
+and_zero: int_and(a, 0)
     => 0
 
-int_and_x_x: int_and(a, a)
+and_x_x: int_and(a, a)
     => a
 
 int_and_minus_1: int_and(x, -1)
@@ -1160,6 +1223,11 @@ mul_neg_neg: int_mul(int_neg(x), int_neg(y))
 mul_lshift: int_mul(x, int_lshift(1, y))
     if y.known_ge_const(0) and y.known_le_const(LONG_BIT)
     => int_lshift(x, y)
+
+mul_pow2_const: int_mul(x, C)
+    if C > 0 and C & (C - 1) == 0
+    compute shift = highest_bit(C)
+    => int_lshift(x, shift)
 """
     prove_source(s)
 
