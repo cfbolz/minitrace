@@ -24,7 +24,6 @@ def addkeyword(kw):
 
 
 addkeyword("if")
-addkeyword("compute")
 addkeyword("and")
 addkeyword("or")
 
@@ -401,9 +400,9 @@ def elements(p):
     return [p[1]] + p[2]
 
 
-@pg.production("element : COMPUTE NAME EQUAL expression")
+@pg.production("element : NAME EQUAL expression")
 def compute_element(p):
-    return Compute(p[1].value, p[3])
+    return Compute(p[0].value, p[2])
 
 
 @pg.production("element : IF expression")
@@ -568,7 +567,7 @@ add_zero: int_add(x, 0)
 def test_parse_int_add_zero():
     s = """\
 add_reassoc_consts: int_add(int_add(x, C1), C2)
-    compute C = C1 + C2
+    C = C1 + C2
     => int_add(x, C)
 """
     ast = parse(s)
@@ -616,7 +615,7 @@ mul_neg_neg: int_mul(int_neg(x), int_neg(y))
     """
 mul_pow2_const: int_mul(x, C)
     if C & (C - 1) == 0
-    compute shift = highest_bit(C)
+    shift = highest_bit(C)
     => int_lshift(x, shift)
 
 mul_lshift: int_mul(x, int_lshift(1, y))
@@ -674,7 +673,7 @@ mul_lshift: int_mul(x, int_lshift(1, y))
 def test_parse_lshift_rshift():
     s = """\
 int_lshift_int_rshift_consts: int_lshift(int_rshift(x, C1), C1)
-    compute C = (-1 >>a C1) << C1
+    C = (-1 >>a C1) << C1
     => int_and(x, C)
     """
     ast = parse(s)
@@ -722,7 +721,7 @@ add_zero: int_add(x, 0)
 
     s = """\
 add_reassoc_consts: int_add(int_add(x, C1), C2)
-    compute C = C1 + C2
+    C = C1 + C2
     => int_add(x, C)
 """
     ast = parse(s)
@@ -1129,7 +1128,7 @@ add_zero: int_add(x, 0)
     => x
 
 add_reassoc_consts: int_add(int_add(x, C1), C2)
-    compute C = C1 + C2
+    C = C1 + C2
     => int_add(x, C)
 
 sub_zero: int_sub(x, 0)
@@ -1145,12 +1144,12 @@ sub_add: int_sub(int_add(x, y), y)
     => x
 
 lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
-    compute C = (-1 >>a C1) << C1
+    C = (-1 >>a C1) << C1
     => int_and(x, C)
 
 lshift_lshift_c_c: int_lshift(int_lshift(x, C1), C2)
     if 0 <= C1 and C1 < LONG_BIT and 0 <= C2 < LONG_BIT
-    compute C = C1 + C2
+    C = C1 + C2
     if C < LONG_BIT
     => int_lshift(x, C)
 
@@ -1200,7 +1199,7 @@ xor_minus_1: int_xor(x, -1)
 
 and_known_result: int_and(a, b)
     if a.and_bound(b).is_constant()
-    compute C = a.and_bound(b).get_constant_int()
+    C = a.and_bound(b).get_constant_int()
     => C
 
 xor_x_y_sub_y: int_sub(int_xor(x, y), y)
@@ -1226,7 +1225,7 @@ mul_lshift: int_mul(x, int_lshift(1, y))
 
 mul_pow2_const: int_mul(x, C)
     if C > 0 and C & (C - 1) == 0
-    compute shift = highest_bit(C)
+    shift = highest_bit(C)
     => int_lshift(x, shift)
 """
     prove_source(s)
