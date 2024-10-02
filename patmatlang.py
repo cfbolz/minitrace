@@ -1022,7 +1022,7 @@ class Prover(object):
         if isinstance(expr, MethodCall):
             res, resvalid = self.convert_expr(expr.value, Z3IntBound)
             assert isinstance(res, Z3IntBound)
-            if expr.methname in ("known_eq_const",):
+            if expr.methname in ("known_eq_const", "known_le_const", "known_ge_const"):
                 targettypes = [int]
             else:
                 targettypes = [Z3IntBound] * len(expr.args)
@@ -1074,6 +1074,10 @@ def test_z3_prove():
 add_zero: int_add(x, 0)
     => x
 
+add_reassoc_consts: int_add(int_add(x, C1), C2)
+    compute C = C1 + C2
+    => int_add(x, C)
+
 sub_zero: int_sub(x, 0)
     => x
 
@@ -1085,10 +1089,6 @@ sub_x_x: int_sub(x, x)
 
 sub_add: int_sub(int_add(x, y), y)
     => x
-
-add_reassoc_consts: int_add(int_add(x, C1), C2)
-    compute C = C1 + C2
-    => int_add(x, C)
 
 lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
     compute C = (-1 >>a C1) << C1
@@ -1144,6 +1144,22 @@ xor_x_y_sub_y: int_sub(int_xor(x, y), y)
     # (x ^ y) - y == x if x & y == 0
     if x.and_bound(y).known_eq_const(0)
     => x
+
+mul_zero: int_mul(x, 0)
+    => 0
+
+mul_one: int_mul(x, 1)
+    => x
+
+mul_minus_one: int_mul(x, -1)
+    => int_neg(x)
+
+mul_neg_neg: int_mul(int_neg(x), int_neg(y))
+    => int_mul(x, y)
+
+mul_lshift: int_mul(x, int_lshift(1, y))
+    if y.known_ge_const(0) and y.known_le_const(LONG_BIT)
+    => int_lshift(x, y)
 """
     prove_source(s)
 
