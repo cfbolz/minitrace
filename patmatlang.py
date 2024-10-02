@@ -138,6 +138,13 @@ class Rule(BaseAst):
         self.elements = elements
         self.target = target
 
+    def __str__(self):
+        lines = [self.name + ": " + str(self.pattern)]
+        for el in self.elements:
+            lines.append("    " + str(el))
+        lines.append("    => " + str(self.target))
+        return "\n".join(lines)
+
 
 class Pattern(BaseAst):
     pass
@@ -150,6 +157,9 @@ class PatternVar(Pattern):
     def sort_key(self):
         return (3, self.name)
 
+    def __str__(self):
+        return self.name
+
 
 class PatternConst(BaseAst):
     def __init__(self, const):
@@ -157,6 +167,9 @@ class PatternConst(BaseAst):
 
     def sort_key(self):
         return (0, self.const)
+
+    def __str__(self):
+        return str(self.const)
 
 
 class PatternOp(BaseAst):
@@ -170,16 +183,25 @@ class PatternOp(BaseAst):
     def sort_key(self):
         return (1, self.opname) + tuple(sorted(arg.sort_key() for arg in self.args))
 
+    def __str__(self):
+        return "%s(%s)" % (self.opname, ", ".join([str(arg) for arg in self.args]))
+
 
 class Compute(BaseAst):
     def __init__(self, name, expr):
         self.name = name
         self.expr = expr
 
+    def __str__(self):
+        return "compute %s = %s" % (self.name, self.expr)
+
 
 class If(BaseAst):
     def __init__(self, expr):
         self.expr = expr
+
+    def __str__(self):
+        return "if %s" % (self.expr,)
 
 
 class Expression(BaseAst):
