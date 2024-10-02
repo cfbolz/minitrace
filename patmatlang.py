@@ -1113,9 +1113,10 @@ xor_zero: int_xor(a, 0)
 xor_minus_1: int_xor(x, -1)
     => int_invert(x)
 
-and_known_0: int_and(a, b)
-    if a.and_bound(b).known_eq_const(0)
-    => 0
+and_known_result: int_and(a, b)
+    if a.and_bound(b).is_constant()
+    compute C = a.and_bound(b).get_constant_int()
+    => C
 
 xor_x_y_sub_y: int_sub(int_xor(x, y), y)
     # (x ^ y) - y == x if x & y == 0
