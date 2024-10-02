@@ -19,7 +19,7 @@ def addtok(name, regex):
 
 
 def addkeyword(kw):
-    addtok(kw.upper(), kw)
+    addtok(kw.upper(), r"\b" + kw + r"\b")
 
 
 addkeyword("if")
@@ -55,7 +55,7 @@ addtok("OP_OR", r"[|]")
 addtok("OP_XOR", r"^")
 addtok("INVERT", r"~")
 
-addtok("NEWLINE", r"\n")
+addtok("NEWLINE", r" *([#].*)?\n")
 
 lg.ignore(r"[ ]")
 
@@ -201,8 +201,10 @@ class BinOp(Expression):
         self.left = left
         self.right = right
 
+
 class IntBinOp(BinOp):
     pass
+
 
 class Add(IntBinOp):
     opname = "int_add"
@@ -231,43 +233,59 @@ class URShift(IntBinOp):
 class ARShift(IntBinOp):
     opname = "int_rshift"
 
+
 class OpAnd(IntBinOp):
     opname = "int_and"
+
 
 class OpOr(IntBinOp):
     opname = "int_or"
 
+
 class OpXor(IntBinOp):
     opname = "int_xor"
+
 
 class Eq(IntBinOp):
     opname = "int_eq"
 
+
 class Ge(IntBinOp):
     opname = "int_ge"
+
 
 class Gt(IntBinOp):
     opname = "int_gt"
 
+
 class Le(IntBinOp):
     opname = "int_le"
+
+
 class Lt(IntBinOp):
     opname = "int_lt"
+
+
 class Ne(IntBinOp):
     opname = "int_ne"
+
 
 class ShortcutAnd(BinOp):
     pass
 
+
 class ShortcutOr(BinOp):
     pass
+
 
 class UnaryOp(Expression):
     def __init__(self, left):
         self.left = left
 
+
 class IntUnaryOp(UnaryOp):
     pass
+
 
 class Invert(IntUnaryOp):
     opname = "int_invert"
@@ -277,6 +295,14 @@ class Attribute(BaseAst):
     def __init__(self, varname, attrname):
         self.varname = varname
         self.attrname = attrname
+
+
+class MethodCall(BaseAst):
+    def __init__(self, value, methname, args):
+        self.value = value
+        self.methname = methname
+        self.args = args
+
 
 # ____________________________________________________________
 # parser
@@ -294,6 +320,8 @@ pg = ParserGenerator(
         ("left", ["LSHIFT", "ARSHIFT", "URSHIFT"]),
         ("left", ["PLUS", "MINUS"]),
         ("left", ["MUL", "DIV"]),
+        ("left", ["INVERT"]),
+        ("left", ["DOT"]),
     ],
 )
 
@@ -348,6 +376,7 @@ def elements(p):
 def compute_element(p):
     return Compute(p[1].value, p[3])
 
+
 @pg.production("element : IF expression")
 def compute_element(p):
     return If(p[1])
@@ -366,6 +395,7 @@ def expression_name(p):
 @pg.production("expression : LPAREN expression RPAREN")
 def expression_parens(p):
     return p[1]
+
 
 @pg.production("expression : INVERT expression")
 def expression_unary(p):
@@ -390,7 +420,6 @@ def expression_unary(p):
 @pg.production("expression : expression LE expression")
 @pg.production("expression : expression LT expression")
 @pg.production("expression : expression NE expression")
-@pg.production("expression : NAME DOT NAME")
 def expression_binop(p):
     left = p[0]
     right = p[2]
@@ -430,10 +459,32 @@ def expression_binop(p):
         return Lt(left, right)
     elif p[1].gettokentype() == "NE":
         return Ne(left, right)
-    elif p[1].gettokentype() == "DOT":
-        return Attribute(left.value, right.value)
     else:
         raise AssertionError("Oops, this should not be possible!")
+
+
+@pg.production("expression : expression DOT NAME maybecall")
+def attr_or_method(p):
+    assert p[1].gettokentype() == "DOT"
+    if p[3] is not None:
+        return MethodCall(p[0], p[2].value, p[3])
+    return Attribute(p[0].name, p[2].value)
+
+
+@pg.production("maybecall : | LPAREN args RPAREN")
+def methodcall(p):
+    if not p:
+        return None
+    return p[1]
+
+
+@pg.production("args : | expression | expression COMMA args ")
+def args(p):
+    if len(p) <= 1:
+        return p
+    import pdb
+
+    pdb.set_trace()
 
 
 parser = pg.build()
@@ -738,6 +789,10 @@ commutative_ops = {"int_add", "int_mul"}
 # ___________________________________________________________________________
 
 import z3
+from rpython.jit.metainterp.optimizeopt.test.test_z3intbound import (
+    Z3IntBound,
+    make_z3_intbounds_instance,
+)
 
 
 class CouldNotProve(Exception):
@@ -752,6 +807,38 @@ FALSEBV = z3.BitVecVal(0, LONG_BIT)
 
 def z3_cond(z3expr):
     return z3.If(z3expr, TRUEBV, FALSEBV)
+
+
+def z3_bool_expression(opname, arg0, arg1=None):
+    expr = None
+    valid = True
+    if opname == "int_eq":
+        expr = arg0 == arg1
+    elif opname == "int_ne":
+        expr = arg0 != arg1
+    elif opname == "int_lt":
+        expr = arg0 < arg1
+    elif opname == "int_le":
+        expr = arg0 <= arg1
+    elif opname == "int_gt":
+        expr = arg0 > arg1
+    elif opname == "int_ge":
+        expr = arg0 >= arg1
+    elif opname == "uint_lt":
+        expr = z3.ULT(arg0, arg1)
+    elif opname == "uint_le":
+        expr = z3.ULE(arg0, arg1)
+    elif opname == "uint_gt":
+        expr = z3.UGT(arg0, arg1)
+    elif opname == "uint_ge":
+        expr = z3.UGE(arg0, arg1)
+    elif opname == "int_is_true":
+        expr = arg0 != FALSEBV
+    elif opname == "int_is_zero":
+        expr = arg0 == FALSEBV
+    else:
+        assert 0
+    return expr, valid
 
 
 def z3_expression(opname, arg0, arg1=None):
@@ -769,26 +856,6 @@ def z3_expression(opname, arg0, arg1=None):
         expr = arg0 | arg1
     elif opname == "int_xor":
         expr = arg0 ^ arg1
-    elif opname == "int_eq":
-        expr = z3_cond(arg0 == arg1)
-    elif opname == "int_ne":
-        expr = z3_cond(arg0 != arg1)
-    elif opname == "int_lt":
-        expr = z3_cond(arg0 < arg1)
-    elif opname == "int_le":
-        expr = z3_cond(arg0 <= arg1)
-    elif opname == "int_gt":
-        expr = z3_cond(arg0 > arg1)
-    elif opname == "int_ge":
-        expr = z3_cond(arg0 >= arg1)
-    elif opname == "uint_lt":
-        expr = z3_cond(z3.ULT(arg0, arg1))
-    elif opname == "uint_le":
-        expr = z3_cond(z3.ULE(arg0, arg1))
-    elif opname == "uint_gt":
-        expr = z3_cond(z3.UGT(arg0, arg1))
-    elif opname == "uint_ge":
-        expr = z3_cond(z3.UGE(arg0, arg1))
     elif opname == "int_lshift":
         expr = arg0 << arg1
         valid = z3.And(arg1 >= 0, arg1 < LONG_BIT)
@@ -804,16 +871,13 @@ def z3_expression(opname, arg0, arg1=None):
         zarg0 = z3.ZeroExt(LONG_BIT, arg0)
         zarg1 = z3.ZeroExt(LONG_BIT, arg1)
         expr = z3.Extract(LONG_BIT * 2 - 1, LONG_BIT, zarg0 * zarg1)
-    elif opname == "int_is_true":
-        expr = z3_cond(arg0 != FALSEBV)
-    elif opname == "int_is_zero":
-        expr = z3_cond(arg0 == FALSEBV)
     elif opname == "int_neg":
         expr = -arg0
     elif opname == "int_invert":
         expr = ~arg0
     else:
-        assert 0
+        expr, valid = z3_bool_expression(opname, arg0, arg1)
+        return z3_cond(expr), valid
     return expr, valid
 
 
@@ -836,6 +900,7 @@ class Prover(object):
     def __init__(self):
         self.solver = z3.Solver()
         self.name_to_z3 = {}
+        self.name_to_intbound = {}
         self.glue_conditions = []
 
     def prove(self, cond):
@@ -850,7 +915,7 @@ class Prover(object):
             return False
 
     def _convert_var(self, name):
-        def newvar(name, suffix=''):
+        def newvar(name, suffix=""):
             if suffix:
                 name += "_" + suffix
             res = z3.BitVec(name, LONG_BIT)
@@ -860,20 +925,19 @@ class Prover(object):
         if name in self.name_to_z3:
             return self.name_to_z3[name]
         res = newvar(name)
-        upper = newvar(name, 'upper')
-        self.glue_conditions.append(res <= upper)
-        lower = newvar(name, 'lower')
-        self.glue_conditions.append(lower <= res)
-        tmask = newvar(name, 'tmask')
-        tvalue = newvar(name, 'tvalue')
-        self.glue_conditions.append(res & ~tmask == tvalue)
+        b = make_z3_intbounds_instance(name, res)
+        self.glue_conditions.append(b.z3_formula())
+        self.name_to_intbound[name] = b
         return res
 
-    def _convert_attr(self, varname, attrname, ):
+    def _convert_attr(
+        self,
+        varname,
+        attrname,
+    ):
         z3var = self._convert_var(varname)
-        name = "%s_%s" % (varname, attrname)
-        assert name in self.name_to_z3
-        return self.name_to_z3[name]
+        b = self.name_to_intbound[varname]
+        return getattr(b, attrname)
 
     def convert_pattern(self, pattern):
         if isinstance(pattern, PatternOp):
@@ -890,35 +954,64 @@ class Prover(object):
 
         pdb.set_trace()
 
-    def convert_expr(self, expr):
+    def convert_expr(self, expr, targettype=int):
         if isinstance(expr, IntBinOp):
-            left, leftvalid = self.convert_expr(expr.left)
-            right, rightvalid = self.convert_expr(expr.right)
-            res, valid = z3_expression(expr.opname, left, right)
+            left, leftvalid = self.convert_expr(expr.left, int)
+            right, rightvalid = self.convert_expr(expr.right, int)
+            if targettype is int:
+                res, valid = z3_expression(expr.opname, left, right)
+            else:
+                assert targettype is bool
+                res, valid = z3_bool_expression(expr.opname, left, right)
             return res, z3_and(leftvalid, rightvalid, valid)
         if isinstance(expr, IntUnaryOp):
-            left, leftvalid = self.convert_expr(expr.left)
+            assert targettype is int
+            left, leftvalid = self.convert_expr(expr.left, targettype)
             res, valid = z3_expression(expr.opname, left)
             return res, z3_and(leftvalid, valid)
         if isinstance(expr, Name):
-            return self._convert_var(expr.name), True
+            var = self._convert_var(expr.name)
+            if targettype is int:
+                return var, True
+            if targettype is Z3IntBound:
+                return self.name_to_intbound[expr.name], True
+            import pdb
+
+            pdb.set_trace()
         if isinstance(expr, Number):
+            assert targettype is int
             res = z3.BitVecVal(expr.value, LONG_BIT)
             return res, True
         if isinstance(expr, ShortcutOr):
-            left, leftvalid = self.convert_expr(expr.left)
-            right, rightvalid = self.convert_expr(expr.right)
-            res = z3.If(left == 1, left, right) 
+            assert targettype is bool
+            left, leftvalid = self.convert_expr(expr.left, bool)
+            right, rightvalid = self.convert_expr(expr.right, bool)
+            res = z3.If(left, left, right)
             return res, z3_and(leftvalid, rightvalid)
         if isinstance(expr, ShortcutAnd):
-            left, leftvalid = self.convert_expr(expr.left)
-            right, rightvalid = self.convert_expr(expr.right)
-            res = z3.If(left == 1, right, left) 
+            assert targettype is bool
+            left, leftvalid = self.convert_expr(expr.left, bool)
+            right, rightvalid = self.convert_expr(expr.right, bool)
+            res = z3.If(left, right, left)
             return res, z3_and(leftvalid, rightvalid)
         if isinstance(expr, Attribute):
             res = self._convert_attr(expr.varname, expr.attrname)
             return res, True
-            
+        if isinstance(expr, MethodCall):
+            res, resvalid = self.convert_expr(expr.value, Z3IntBound)
+            assert isinstance(res, Z3IntBound)
+            if expr.methname in ("known_eq_const",):
+                targettypes = [int]
+            else:
+                targettypes = [Z3IntBound] * len(expr.args)
+            args = [
+                self.convert_expr(arg, typ) for arg, typ in zip(expr.args, targettypes)
+            ]
+            methargs = [arg[0] for arg in args]
+            return getattr(res, expr.methname)(*methargs), z3_and(
+                resvalid, *[arg[1] for arg in args]
+            )
+
         import pdb
 
         pdb.set_trace()
@@ -930,15 +1023,17 @@ class Prover(object):
         implies_right = [rhsvalid, rhs == lhs]
         for el in rule.elements:
             if isinstance(el, Compute):
-                expr, exprvalid = self.convert_expr(el.expr)
+                expr, exprvalid = self.convert_expr(el.expr, int)
                 implies_left.append(self._convert_var(el.name) == expr)
                 implies_right.append(exprvalid)
                 continue
             if isinstance(el, If):
-                expr, _ = self.convert_expr(el.expr)
-                implies_left.append(expr == 1)
+                expr, _ = self.convert_expr(el.expr, bool)
+                implies_left.append(expr)
                 continue
-            import pdb;pdb.set_trace()
+            import pdb
+
+            pdb.set_trace()
         implies_left.extend(self.glue_conditions)
         condition = z3_implies(z3_and(*implies_left), z3_and(*implies_right))
         print("checking %s" % rule)
@@ -1018,6 +1113,14 @@ xor_zero: int_xor(a, 0)
 xor_minus_1: int_xor(x, -1)
     => int_invert(x)
 
+and_known_0: int_and(a, b)
+    if a.and_bound(b).known_eq_const(0)
+    => 0
+
+xor_x_y_sub_y: int_sub(int_xor(x, y), y)
+    # (x ^ y) - y == x if x & y == 0
+    if x.and_bound(y).known_eq_const(0)
+    => x
 """
     prove_source(s)
 
