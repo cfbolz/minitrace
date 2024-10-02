@@ -155,7 +155,10 @@ class PatternVar(Pattern):
         self.name = name
 
     def sort_key(self):
-        return (3, self.name)
+        return (2, self.name)
+
+    def sort_key_result(self):
+        return (1, self.name)
 
     def __str__(self):
         return self.name
@@ -166,6 +169,9 @@ class PatternConst(BaseAst):
         self.const = const
 
     def sort_key(self):
+        return (0, self.const)
+
+    def sort_key_result(self):
         return (0, self.const)
 
     def __str__(self):
@@ -182,6 +188,9 @@ class PatternOp(BaseAst):
 
     def sort_key(self):
         return (1, self.opname) + tuple(sorted(arg.sort_key() for arg in self.args))
+
+    def sort_key_result(self):
+        return (2, self.opname) + tuple(sorted(arg.sort_key_result() for arg in self.args))
 
     def __str__(self):
         return "%s(%s)" % (self.opname, ", ".join([str(arg) for arg in self.args]))
@@ -677,7 +686,7 @@ def generate_commutative_patterns_args(args):
     args1 = args[1:]
     for subarg0 in generate_commutative_patterns(arg0):
         for subargs1 in generate_commutative_patterns_args(args1):
-            yield [arg0] + subargs1
+            yield [subarg0] + subargs1
 
 
 def generate_commutative_patterns(pattern):
@@ -691,6 +700,9 @@ def generate_commutative_patterns(pattern):
             yield pattern.newargs(subargs)
             yield pattern.newargs(subargs[::-1])
 
+def generate_commutative_rules(rule):
+    for pattern in generate_commutative_patterns(rule.pattern):
+        yield Rule(rule.name, pattern, rule.elements, rule.target)
 
 def test_generate_commutative_rules():
     s = """\
@@ -716,40 +728,14 @@ add_reassoc_consts: int_add(int_add(x, C1), C2)
 """
     ast = parse(s)
     patterns = list(generate_commutative_patterns(ast.rules[0].pattern))
-    assert patterns == [
-        PatternOp(
-            opname="int_add",
-            args=[
-                PatternOp(opname="int_add", args=[PatternVar("x"), PatternVar("C1")]),
-                PatternVar("C2"),
-            ],
-        ),
-        PatternOp(
-            opname="int_add",
-            args=[
-                PatternVar("C2"),
-                PatternOp(opname="int_add", args=[PatternVar("x"), PatternVar("C1")]),
-            ],
-        ),
-        PatternOp(
-            opname="int_add",
-            args=[
-                PatternOp(opname="int_add", args=[PatternVar("x"), PatternVar("C1")]),
-                PatternVar("C2"),
-            ],
-        ),
-        PatternOp(
-            opname="int_add",
-            args=[
-                PatternVar("C2"),
-                PatternOp(opname="int_add", args=[PatternVar("x"), PatternVar("C1")]),
-            ],
-        ),
-    ]
+    assert patterns == [PatternOp(opname='int_add', args=[PatternOp(opname='int_add', args=[PatternVar('x'), PatternVar('C1')]), PatternVar('C2')]),
+ PatternOp(opname='int_add', args=[PatternVar('C2'), PatternOp(opname='int_add', args=[PatternVar('x'), PatternVar('C1')])]),
+ PatternOp(opname='int_add', args=[PatternOp(opname='int_add', args=[PatternVar('C1'), PatternVar('x')]), PatternVar('C2')]),
+ PatternOp(opname='int_add', args=[PatternVar('C2'), PatternOp(opname='int_add', args=[PatternVar('C1'), PatternVar('x')])])]
 
 
 def sort_rules(rules):
-    return sorted(rules, key=lambda rule: rule.pattern.sort_key())
+    return sorted(rules, key=lambda rule: (rule.target.sort_key_result(), rule.pattern.sort_key()))
 
 
 def test_sort_patterns():
@@ -765,46 +751,10 @@ int_sub_zero_neg: int_sub(0, x)
     """
     ast = parse(s)
     rules = sort_rules(ast.rules)
-    assert rules == [
-        Rule(
-            name="int_sub_zero",
-            pattern=PatternOp(
-                opname="int_sub", args=[PatternVar("x"), PatternConst("0")]
-            ),
-            elements=[],
-            target=PatternVar("x"),
-        ),
-        Rule(
-            name="int_sub_zero_neg",
-            pattern=PatternOp(
-                opname="int_sub", args=[PatternConst("0"), PatternVar("x")]
-            ),
-            elements=[],
-            target=PatternOp(opname="int_neg", args=[PatternVar("x")]),
-        ),
-        Rule(
-            name="int_sub_add",
-            pattern=PatternOp(
-                opname="int_sub",
-                args=[
-                    PatternOp(
-                        opname="int_add", args=[PatternVar("x"), PatternVar("y")]
-                    ),
-                    PatternVar("y"),
-                ],
-            ),
-            elements=[],
-            target=PatternVar("x"),
-        ),
-        Rule(
-            name="int_sub_x_x",
-            pattern=PatternOp(
-                opname="int_sub", args=[PatternVar("x"), PatternVar("x")]
-            ),
-            elements=[],
-            target=PatternConst("0"),
-        ),
-    ]
+    assert rules == [Rule(name='int_sub_x_x', pattern=PatternOp(opname='int_sub', args=[PatternVar('x'), PatternVar('x')]), elements=[], target=PatternConst('0')),
+ Rule(name='int_sub_zero', pattern=PatternOp(opname='int_sub', args=[PatternVar('x'), PatternConst('0')]), elements=[], target=PatternVar('x')),
+ Rule(name='int_sub_add', pattern=PatternOp(opname='int_sub', args=[PatternOp(opname='int_add', args=[PatternVar('x'), PatternVar('y')]), PatternVar('y')]), elements=[], target=PatternVar('x')),
+ Rule(name='int_sub_zero_neg', pattern=PatternOp(opname='int_sub', args=[PatternConst('0'), PatternVar('x')]), elements=[], target=PatternOp(opname='int_neg', args=[PatternVar('x')]))]
 
 
 commutative_ops = {"int_add", "int_mul"}
@@ -1280,15 +1230,25 @@ class Codegen(object):
 
     def generate_target(self, target):
         if isinstance(target, PatternVar):
-            return "self.make_equal_to(op, %s)" % self.bindings[target.name]
-        if isinstance(target, PatternConst):
-            return "self.make_constant_int(op, %s)" % target.const
-        if isinstance(target, PatternOp):
-            import pdb;pdb.set_trace()
+            self.emit("self.make_equal_to(op, %s)" % self.bindings[target.name])
             return
-        import pdb
-
-        pdb.set_trace()
+        if isinstance(target, PatternConst):
+            self.emit("self.make_constant_int(op, %s)" % target.const)
+            return
+        if isinstance(target, PatternOp):
+            args = []
+            for arg in target.args:
+                if isinstance(arg, PatternVar):
+                    args.append(self.bindings[arg.name])
+                elif isinstance(arg, PatternConst):
+                    args.append("ConstInt(%s)" % arg.const)
+                else:
+                    import pdb;pdb.set_trace()
+                    assert 0
+            self.emit("newop = self.replace_op_with(op, rop.%s, args=[%s])" % (target.opname.upper(), ", ".join(args)))
+            self.emit("self.optimizer.send_extra_operation(newop)")
+            return
+        assert 0
 
     def _pattern_arg_check(self, boxnames, boundnames, args):
         for i, p in enumerate(args):
@@ -1311,15 +1271,18 @@ class Codegen(object):
         with self.emit_indent("def optimize_%s(self, op):" % opname.upper()):
             numargs = len(rules[0].pattern.args)
             boxnames, boundnames = self._emit_arg_reads("arg", "op", numargs)
+            all_rules = []
             for rule in rules:
+                all_rules.extend(generate_commutative_rules(rule))
+            all_rules = sort_rules(all_rules)
+            for rule in all_rules:
                 self.emit("# %s => %s" % (rule.pattern, rule.target))
                 currlevel = self.level
                 checks = []
                 self._pattern_arg_check(boxnames, boundnames, rule.pattern.args)
                 for el in rule.elements:
                     assert 0
-                targetcomp = self.generate_target(rule.target)
-                self.emit("%s" % targetcomp)
+                self.generate_target(rule.target)
                 self.emit("return")
                 self.level = currlevel
 
@@ -1341,26 +1304,25 @@ int_sub_x_x: int_sub(x, x)
     => 0
 int_sub_add: int_sub(int_add(x, y), y)
     => x
-"""
-    """
 int_sub_zero_neg: int_sub(0, x)
     => int_neg(x)
     """
     codegen = Codegen()
     res = codegen.generate_code(parse(s))
+    print(res)
     assert res == """
 def optimize_INT_SUB(self, op):
     arg_0 = get_box_replacement(op.getarg(0))
     b_arg_0 = self.getintbound(arg_0)
     arg_1 = get_box_replacement(op.getarg(1))
     b_arg_1 = self.getintbound(arg_1)
-    # int_sub(x, 0) => x
-    if b_arg_1.known_eq_const(0):
-        self.make_equal_to(op, arg_0)
-        return
     # int_sub(x, x) => 0
     if arg_1 is arg_0:
         self.make_constant_int(op, 0)
+        return
+    # int_sub(x, 0) => x
+    if b_arg_1.known_eq_const(0):
+        self.make_equal_to(op, arg_0)
         return
     # int_sub(int_add(x, y), y) => x
     arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
@@ -1373,6 +1335,24 @@ def optimize_INT_SUB(self, op):
             if arg_1 is arg_0_int_add_1:
                 self.make_equal_to(op, arg_0)
                 return
+    # int_sub(int_add(y, x), y) => x
+    arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
+    if arg_0_int_add is not None:
+        arg_0_int_add_0 = get_box_replacement(arg_0.getarg(0))
+        b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
+        arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
+        b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
+        if arg_0_int_add_0 is arg_0_int_add_1:
+            if arg_0_int_add_1 is arg_0:
+                if arg_1 is arg_0_int_add_1:
+                    self.make_equal_to(op, arg_0)
+                    return
+    # int_sub(0, x) => int_neg(x)
+    if b_arg_0.known_eq_const(0):
+        if arg_1 is arg_0:
+            newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_0])
+            self.optimizer.send_extra_operation(newop)
+            return
 """
 
 
