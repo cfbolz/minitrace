@@ -5,6 +5,11 @@ from rply import LexerGenerator, LexingError, ParserGenerator, ParsingError
 from rply.token import BaseBox
 
 from rpython.rlib.rarithmetic import LONG_BIT, r_uint, intmask, ovfcheck, uint_mul_high
+from rpython.jit.metainterp.optimizeopt.intutils import (
+    IntBound,
+)
+
+commutative_ops = {"int_add", "int_mul"}
 
 # ____________________________________________________________
 # lexer
@@ -67,13 +72,14 @@ lexer = lg.build()
 
 
 class Visitor(object):
-    def visit(self, ast):
-        meth = getattr(self, "visit_%s" % type(ast).__name__, None)
-        if meth is not None:
-            return meth(ast)
-        return self.default_visit(ast)
+    def visit(self, ast, **kwargs):
+        for typ in type(ast).mro():
+            meth = getattr(self, "visit_%s" % typ.__name__, None)
+            if meth is not None:
+                return meth(ast, **kwargs)
+        return self.default_visit(ast, **kwargs)
 
-    def default_visit(self, ast):
+    def default_visit(self, ast, **kwargs):
         pass
 
 
@@ -165,6 +171,7 @@ class PatternVar(Pattern):
 
 
 class PatternConst(BaseAst):
+    typ = int
     def __init__(self, const):
         self.const = const
 
@@ -216,15 +223,20 @@ class Check(BaseAst):
 
 
 class Expression(BaseAst):
-    pass
+    typ = None # can be None, int, bool, IntBound
 
 
-class Name(BaseAst):
+class Name(Expression):
     def __init__(self, name):
         self.name = name
+        if self.name.startswith('C'):
+            self.typ = int
+        else:
+            self.typ = IntBound
 
 
-class Number(BaseAst):
+class Number(Expression):
+    typ = int
     def __init__(self, value):
         self.value = value
 
@@ -236,7 +248,10 @@ class BinOp(Expression):
 
 
 class IntBinOp(BinOp):
-    pass
+    typ = int
+
+class BoolBinOp(BinOp):
+    typ = bool
 
 
 class Add(IntBinOp):
@@ -279,36 +294,36 @@ class OpXor(IntBinOp):
     opname = "int_xor"
 
 
-class Eq(IntBinOp):
+class Eq(BoolBinOp):
     opname = "int_eq"
 
 
-class Ge(IntBinOp):
+class Ge(BoolBinOp):
     opname = "int_ge"
 
 
-class Gt(IntBinOp):
+class Gt(BoolBinOp):
     opname = "int_gt"
 
 
-class Le(IntBinOp):
+class Le(BoolBinOp):
     opname = "int_le"
 
 
-class Lt(IntBinOp):
+class Lt(BoolBinOp):
     opname = "int_lt"
 
 
-class Ne(IntBinOp):
+class Ne(BoolBinOp):
     opname = "int_ne"
 
 
 class ShortcutAnd(BinOp):
-    pass
+    typ = bool
 
 
 class ShortcutOr(BinOp):
-    pass
+    typ = bool
 
 
 class UnaryOp(Expression):
@@ -317,7 +332,7 @@ class UnaryOp(Expression):
 
 
 class IntUnaryOp(UnaryOp):
-    pass
+    typ = int
 
 
 class Invert(IntUnaryOp):
@@ -325,22 +340,25 @@ class Invert(IntUnaryOp):
 
 
 class Attribute(BaseAst):
+    typ = int
     def __init__(self, varname, attrname):
         self.varname = varname
         self.attrname = attrname
 
 
-class MethodCall(BaseAst):
+class MethodCall(Expression):
     def __init__(self, value, methname, args):
         self.value = value
         self.methname = methname
         self.args = args
+        # XXX type checks
 
 
-class FuncCall(BaseAst):
+class FuncCall(Expression):
     def __init__(self, funcname, args):
         self.funcname = funcname
         self.args = args
+        # XXX type checks
 
 
 # ____________________________________________________________
@@ -553,6 +571,119 @@ print_conflicts()
 def parse(s):
     return parser.parse(lexer.lex(s))
 
+# ___________________________________________________________________________
+
+MANY_RULES = """\
+add_zero: int_add(x, 0)
+    => x
+
+add_reassoc_consts: int_add(int_add(x, C1), C2)
+    C = C1 + C2
+    => int_add(x, C)
+
+sub_zero: int_sub(x, 0)
+    => x
+
+sub_from_zero: int_sub(0, x)
+    => int_neg(x)
+
+sub_x_x: int_sub(x, x)
+    => 0
+
+sub_add_consts: int_sub(int_add(x, C1), C2)
+    C = C2 - C1
+    => int_sub(x, C)
+
+sub_add: int_sub(int_add(x, y), y)
+    => x
+
+lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
+    check 0 <= C1 and C1 < LONG_BIT
+    C = (-1 >>a C1) << C1
+    => int_and(x, C)
+
+lshift_lshift_c_c: int_lshift(int_lshift(x, C1), C2)
+    check 0 <= C1 and C1 < LONG_BIT and 0 <= C2 < LONG_BIT
+    C = C1 + C2
+    check C < LONG_BIT
+    => int_lshift(x, C)
+
+neg_neg: int_neg(int_neg(x))
+    => x
+
+invert_invert: int_invert(int_invert(x))
+    => x
+
+or_minus_1: int_or(x, -1)
+    => -1
+
+or_x_x: int_or(a, a)
+    => a
+
+or_absorb: int_or(a, int_or(a, b))
+    => int_or(a, b)
+
+and_zero: int_and(a, 0)
+    => 0
+
+and_x_x: int_and(a, a)
+    => a
+
+and_minus_1: int_and(x, -1)
+    => x
+
+and_x_c_in_range: int_and(x, C)
+    check x.lower >= 0 and x.upper <= C & ~(C + 1)
+    => x
+
+and_x_y_covered_ones: int_and(x, y)
+    check ~y.tvalue & (x.tmask | x.tvalue) == 0
+    => x
+
+and_known_result: int_and(a, b)
+    check a.and_bound(b).is_constant()
+    C = a.and_bound(b).get_constant_int()
+    => C
+
+
+xor_x_x: int_xor(a, a)
+    => 0
+
+xor_absorb: int_xor(int_xor(a, b), b)
+    => a
+
+xor_zero: int_xor(a, 0)
+    => a
+
+xor_minus_1: int_xor(x, -1)
+    => int_invert(x)
+
+xor_x_y_sub_y: int_sub(int_xor(x, y), y)
+    # (x ^ y) - y == x if x & y == 0
+    check x.and_bound(y).known_eq_const(0)
+    => x
+
+mul_zero: int_mul(x, 0)
+    => 0
+
+mul_one: int_mul(x, 1)
+    => x
+
+mul_minus_one: int_mul(x, -1)
+    => int_neg(x)
+
+mul_neg_neg: int_mul(int_neg(x), int_neg(y))
+    => int_mul(x, y)
+
+mul_lshift: int_mul(x, int_lshift(1, y))
+    check y.known_ge_const(0) and y.known_le_const(LONG_BIT)
+    => int_lshift(x, y)
+
+mul_pow2_const: int_mul(x, C)
+    check C > 0 and C & (C - 1) == 0
+    shift = highest_bit(C)
+    => int_lshift(x, shift)
+"""
 
 def test_parse_int_add_zero():
     s = """\
@@ -678,6 +809,9 @@ int_lshift_int_rshift_consts: int_lshift(int_rshift(x, C1), C1)
     => int_and(x, C)
     """
     ast = parse(s)
+
+def test_parse_all():
+    ast = parse(MANY_RULES)
 
 
 def generate_commutative_patterns_args(args):
@@ -824,8 +958,102 @@ int_sub_zero_neg: int_sub(0, x)
         ),
     ]
 
+# ___________________________________________________________________________
+# attach types
 
-commutative_ops = {"int_add", "int_mul"}
+INTBOUND_METHODTYPES = {
+    "known_eq_const": (IntBound, [int], bool),
+    "known_le_const": (IntBound, [int], bool),
+    "known_ge_const": (IntBound, [int], bool),
+    "known_ge_const": (IntBound, [int], bool),
+    "is_constant": (IntBound, [], bool),
+    "get_constant_int": (IntBound, [], int),
+}
+
+FUNCTYPES = {
+    "highest_bit": ([int], int)
+}
+
+class TypeCheckError(Exception):
+    pass
+
+class TypingVisitor(Visitor):
+    def _must_be_same_typ(self, ast, typ, targettyp):
+        if targettyp is not typ:
+            raise TypeCheckError(ast, typ, targettyp)
+    def visit_Rule(self, rule):
+        self.bindings = {}
+        self.visit(rule.pattern, patterndefine=True)
+        for el in rule.elements:
+            self.visit(el)
+        self.visit(rule.target, patterndefine=False)
+
+    def visit_PatternVar(self, ast, patterndefine):
+        if patterndefine:
+            if ast.name.startswith('C'):
+                typ = int
+            else:
+                typ = IntBound
+            if ast.name in self.bindings:
+                self._must_be_same_typ(ast, self.bindings[ast.name], typ)
+            else:
+                self.bindings[ast.name] = typ
+        else:
+            typ = self.bindings[ast.name]
+        return typ
+
+    def visit_PatternConst(self, ast, patterndefine):
+        return ast.typ
+
+    def visit_PatternOp(self, ast, patterndefine):
+        # XXX check that name exists
+        for arg in ast.args:
+            self.visit(arg, patterndefine=patterndefine)
+
+    def visit_Compute(self, ast):
+        assert ast.name not in self.bindings
+        self.bindings[ast.name] = self.visit(ast.expr)
+
+    def visit_Check(self, ast):
+        typ = self.visit(ast.expr)
+        assert typ is bool
+
+    def visit_Expression(self, ast):
+        if ast.typ is not None:
+            return ast.typ
+        import pdb;pdb.set_trace()
+
+    def visit_MethodCall(self, ast):
+        if ast.methname in INTBOUND_METHODTYPES:
+            _, argtyps, restyp = INTBOUND_METHODTYPES[ast.methname]
+            for arg, typ in zip(ast.args, argtyps):
+                hastyp = self.visit(arg)
+                self._must_be_same_typ(arg, hastyp, typ)
+            self.typ = restyp
+            return restyp
+        import pdb;pdb.set_trace()
+
+    def visit_FuncCall(self, ast):
+        if ast.funcname in FUNCTYPES:
+            argtyps, restyp = FUNCTYPES[ast.funcname]
+            for arg, typ in zip(ast.args, argtyps):
+                hastyp = self.visit(arg)
+                self._must_be_same_typ(arg, hastyp, typ)
+            self.typ = restyp
+            return restyp
+
+    def default_visit(self, ast):
+        assert ast.typ is not None
+        return ast.typ
+
+
+
+
+def test_typecheck_all():
+    ast = parse(MANY_RULES)
+    t = TypingVisitor()
+    for rule in ast.rules:
+        t.visit(rule)
 
 # ___________________________________________________________________________
 
@@ -1032,7 +1260,19 @@ class Prover(object):
         pdb.set_trace()
 
     def convert_expr(self, expr, targettype=int):
-        if isinstance(expr, IntBinOp):
+        if isinstance(expr, ShortcutOr):
+            assert targettype is bool
+            left, leftvalid = self.convert_expr(expr.left, bool)
+            right, rightvalid = self.convert_expr(expr.right, bool)
+            res = z3.If(left, left, right)
+            return res, z3_and(leftvalid, rightvalid)
+        if isinstance(expr, ShortcutAnd):
+            assert targettype is bool
+            left, leftvalid = self.convert_expr(expr.left, bool)
+            right, rightvalid = self.convert_expr(expr.right, bool)
+            res = z3.If(left, right, left)
+            return res, z3_and(leftvalid, rightvalid)
+        if isinstance(expr, BinOp):
             left, leftvalid = self.convert_expr(expr.left, int)
             right, rightvalid = self.convert_expr(expr.right, int)
             if targettype is int:
@@ -1041,7 +1281,7 @@ class Prover(object):
                 assert targettype is bool
                 res, valid = z3_bool_expression(expr.opname, left, right)
             return res, z3_and(leftvalid, rightvalid, valid)
-        if isinstance(expr, IntUnaryOp):
+        if isinstance(expr, UnaryOp):
             assert targettype is int
             left, leftvalid = self.convert_expr(expr.left, targettype)
             res, valid = z3_expression(expr.opname, left)
@@ -1066,18 +1306,6 @@ class Prover(object):
             assert targettype is int
             res = z3.BitVecVal(expr.value, LONG_BIT)
             return res, True
-        if isinstance(expr, ShortcutOr):
-            assert targettype is bool
-            left, leftvalid = self.convert_expr(expr.left, bool)
-            right, rightvalid = self.convert_expr(expr.right, bool)
-            res = z3.If(left, left, right)
-            return res, z3_and(leftvalid, rightvalid)
-        if isinstance(expr, ShortcutAnd):
-            assert targettype is bool
-            left, leftvalid = self.convert_expr(expr.left, bool)
-            right, rightvalid = self.convert_expr(expr.right, bool)
-            res = z3.If(left, right, left)
-            return res, z3_and(leftvalid, rightvalid)
         if isinstance(expr, Attribute):
             res = self._convert_attr(expr.varname, expr.attrname)
             return res, True
@@ -1140,118 +1368,7 @@ def prove_source(s):
 
 
 def test_z3_prove():
-    s = """\
-add_zero: int_add(x, 0)
-    => x
-
-add_reassoc_consts: int_add(int_add(x, C1), C2)
-    C = C1 + C2
-    => int_add(x, C)
-
-sub_zero: int_sub(x, 0)
-    => x
-
-sub_from_zero: int_sub(0, x)
-    => int_neg(x)
-
-sub_x_x: int_sub(x, x)
-    => 0
-
-sub_add_consts: int_sub(int_add(x, C1), C2)
-    C = C2 - C1
-    => int_sub(x, C)
-
-sub_add: int_sub(int_add(x, y), y)
-    => x
-
-lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
-    check 0 <= C1 and C1 < LONG_BIT
-    C = (-1 >>a C1) << C1
-    => int_and(x, C)
-
-lshift_lshift_c_c: int_lshift(int_lshift(x, C1), C2)
-    check 0 <= C1 and C1 < LONG_BIT and 0 <= C2 < LONG_BIT
-    C = C1 + C2
-    check C < LONG_BIT
-    => int_lshift(x, C)
-
-neg_neg: int_neg(int_neg(x))
-    => x
-
-invert_invert: int_invert(int_invert(x))
-    => x
-
-or_minus_1: int_or(x, -1)
-    => -1
-
-or_x_x: int_or(a, a)
-    => a
-
-or_absorb: int_or(a, int_or(a, b))
-    => int_or(a, b)
-
-and_zero: int_and(a, 0)
-    => 0
-
-and_x_x: int_and(a, a)
-    => a
-
-and_minus_1: int_and(x, -1)
-    => x
-
-and_x_c_in_range: int_and(x, C)
-    check x.lower >= 0 and x.upper <= C & ~(C + 1)
-    => x
-
-and_x_y_covered_ones: int_and(x, y)
-    check ~y.tvalue & (x.tmask | x.tvalue) == 0
-    => x
-
-and_known_result: int_and(a, b)
-    check a.and_bound(b).is_constant()
-    C = a.and_bound(b).get_constant_int()
-    => C
-
-
-xor_x_x: int_xor(a, a)
-    => 0
-
-xor_absorb: int_xor(int_xor(a, b), b)
-    => a
-
-xor_zero: int_xor(a, 0)
-    => a
-
-xor_minus_1: int_xor(x, -1)
-    => int_invert(x)
-
-xor_x_y_sub_y: int_sub(int_xor(x, y), y)
-    # (x ^ y) - y == x if x & y == 0
-    check x.and_bound(y).known_eq_const(0)
-    => x
-
-mul_zero: int_mul(x, 0)
-    => 0
-
-mul_one: int_mul(x, 1)
-    => x
-
-mul_minus_one: int_mul(x, -1)
-    => int_neg(x)
-
-mul_neg_neg: int_mul(int_neg(x), int_neg(y))
-    => int_mul(x, y)
-
-mul_lshift: int_mul(x, int_lshift(1, y))
-    check y.known_ge_const(0) and y.known_le_const(LONG_BIT)
-    => int_lshift(x, y)
-
-mul_pow2_const: int_mul(x, C)
-    check C > 0 and C & (C - 1) == 0
-    shift = highest_bit(C)
-    => int_lshift(x, shift)
-"""
-    prove_source(s)
+    prove_source(MANY_RULES)
 
 
 # ___________________________________________________________________________
@@ -1416,7 +1533,6 @@ sub_add_const: int_sub(int_add(x, C), C) # nonsense rule, but I want to see cons
 sub_add_consts: int_sub(int_add(x, C1), C2)
     C = C2 - C1
     => int_sub(x, C)
-
     """
     codegen = Codegen()
     res = codegen.generate_code(parse(s))
