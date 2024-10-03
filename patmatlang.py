@@ -603,7 +603,7 @@ lshift_rshift_c_c: int_lshift(int_rshift(x, C1), C1)
     => int_and(x, C)
 
 lshift_lshift_c_c: int_lshift(int_lshift(x, C1), C2)
-    check 0 <= C1 and C1 < LONG_BIT and 0 <= C2 < LONG_BIT
+    check 0 <= C1 and C1 < LONG_BIT and 0 <= C2 and C2 < LONG_BIT
     C = C1 + C2
     check C < LONG_BIT
     => int_lshift(x, C)
@@ -981,6 +981,10 @@ class TypingVisitor(Visitor):
     def _must_be_same_typ(self, ast, typ, targettyp):
         if targettyp is not typ:
             raise TypeCheckError(ast, typ, targettyp)
+
+    def _error(self, msg, ast):
+        raise TypeCheckError(msg, ast)
+
     def visit_Rule(self, rule):
         self.bindings = {}
         self.visit(rule.pattern, patterndefine=True)
@@ -1019,9 +1023,39 @@ class TypingVisitor(Visitor):
         assert typ is bool
 
     def visit_Expression(self, ast):
+        import pdb;pdb.set_trace()
         if ast.typ is not None:
             return ast.typ
         import pdb;pdb.set_trace()
+
+    def visit_Name(self, ast):
+        if ast.name == "LONG_BIT":
+            return int
+        if ast.name not in self.bindings:
+            self._error("variable %s is not defined", ast)
+        return self.bindings[ast.name]
+
+    def visit_Number(self, ast):
+        return ast.typ
+
+    def visit_IntBinOp(self, ast):
+        self._must_be_same_typ(ast.left, int, self.visit(ast.left))
+        self._must_be_same_typ(ast.right, int, self.visit(ast.right))
+        return int
+
+    def visit_IntUnaryOp(self, ast):
+        self._must_be_same_typ(ast.left, int, self.visit(ast.left))
+        return int
+
+    def visit_BoolBinOp(self, ast):
+        self._must_be_same_typ(ast.left, int, self.visit(ast.left))
+        self._must_be_same_typ(ast.right, int, self.visit(ast.right))
+        return bool
+
+    def visit_ShortcutAnd(self, ast):
+        self._must_be_same_typ(ast.left, bool, self.visit(ast.left))
+        self._must_be_same_typ(ast.right, bool, self.visit(ast.right))
+        return bool
 
     def visit_MethodCall(self, ast):
         if ast.methname in INTBOUND_METHODTYPES:
