@@ -1580,7 +1580,7 @@ class Codegen(object):
                 self._pattern_arg_check(boxnames, boundnames, rule.pattern.args)
                 for el in rule.elements:
                     if isinstance(el, Check):
-                        import pdb;pdb.set_trace()
+                        self.generate_check(el)
                     elif isinstance(el, Compute):
                         self.generate_compute(el)
                     else:
@@ -1594,10 +1594,14 @@ class Codegen(object):
         res = self.generate_expr(el.expr)
         self.emit("%s = %s" % (el.name, res))
 
+    def generate_check(self, el):
+        res = self.generate_expr(el.expr)
+        self.emit_stacking_condition(res)
+
     def generate_expr(self, expr, prec=0):
         if isinstance(expr, BinOp):
-            left_prec = expr.left.precedence
-            right_prec = expr.right.precedence - 1 # all left assoc for now
+            left_prec = expr.precedence
+            right_prec = expr.precedence + 1 # all left assoc for now
             left = self.generate_expr(expr.left, left_prec)
             right = self.generate_expr(expr.right, right_prec)
             res = "%s %s %s" % (left, expr.pysymbol, right)
@@ -1606,6 +1610,17 @@ class Codegen(object):
             return res
         elif isinstance(expr, Name):
             return expr.name
+        elif isinstance(expr, Attribute):
+            return "%s.%s" % (expr.varname, expr.attrname)
+        elif isinstance(expr, Number):
+            return expr.value
+        elif isinstance(expr, UnaryOp):
+            sub_prec = expr.precedence
+            sub = self.generate_expr(expr.left, sub_prec + 1)
+            res = "%s%s" % (expr.pysymbol, sub)
+            if prec > expr.precedence:
+                res = "(" + res + ")"
+            return res
         else:
             import pdb;pdb.set_trace()
 
@@ -1618,6 +1633,16 @@ class Codegen(object):
         self.emit()
         return "\n".join(self.code)
 
+def test_generate_expr_precedence():
+    c = Codegen()
+    res = c.generate_expr(Mul(Sub(Name('a'), Name('b')), Name('c')))
+    assert res == '(a - b) * c'
+    res = c.generate_expr(Sub(Mul(Name('a'), Name('b')), Name('c')))
+    assert res == 'a * b - c'
+    res = c.generate_expr(Sub(Sub(Name('a'), Name('b')), Name('c')))
+    assert res == 'a - b - c'
+    res = c.generate_expr(Sub(Name('a'), Sub(Name('b'), Name('c'))))
+    assert res == 'a - (b - c)'
 
 def test_generate_code():
     s = """\
@@ -1634,6 +1659,9 @@ sub_add_const: int_sub(int_add(x, C), C) # nonsense rule, but I want to see cons
 sub_add_consts: int_sub(int_add(x, C1), C2)
     C = C2 - C1
     => int_sub(x, C)
+and_x_c_in_range: int_and(x, C)
+    check x.lower >= 0 and x.upper <= C & ~(C + 1)
+    => x
     """
     codegen = Codegen()
     res = codegen.generate_code(parse(s))
@@ -1733,6 +1761,18 @@ def optimize_INT_SUB(self, op):
                 newop = self.replace_op_with(op, rop.INT_SUB, args=[arg_0_int_add_1, ConstInt(C)])
                 self.optimizer.send_extra_operation(newop)
                 return
+
+def optimize_INT_AND(self, op):
+    arg_0 = get_box_replacement(op.getarg(0))
+    b_arg_0 = self.getintbound(arg_0)
+    arg_1 = get_box_replacement(op.getarg(1))
+    b_arg_1 = self.getintbound(arg_1)
+    # and_x_c_in_range: int_and(x, C) => x
+    if b_arg_1.is_constant():
+        C_arg_1 = b_arg_1.get_constant_int()
+        if x.lower >= 0 and x.upper <= C & ~(C + 1):
+            self.make_equal_to(op, arg_0)
+            return
 """
     )
 
