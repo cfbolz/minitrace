@@ -9,6 +9,10 @@ from rpython.jit.metainterp.optimizeopt.intutils import (
     IntBound,
 )
 
+# TODOS:
+# - chained comparisons
+# - errors with positions
+
 commutative_ops = {"int_add", "int_mul"}
 
 # ____________________________________________________________
@@ -256,14 +260,17 @@ class BoolBinOp(BinOp):
 
 class Add(IntBinOp):
     opname = "int_add"
+    pysymbol = "+"
 
 
 class Sub(IntBinOp):
     opname = "int_sub"
+    pysymbol = "-"
 
 
 class Mul(IntBinOp):
     opname = "int_mul"
+    pysymbol = "*"
 
 
 class Div(IntBinOp):
@@ -272,6 +279,7 @@ class Div(IntBinOp):
 
 class LShift(IntBinOp):
     opname = "int_lshift"
+    pysymbol = "<<"
 
 
 class URShift(IntBinOp):
@@ -280,50 +288,62 @@ class URShift(IntBinOp):
 
 class ARShift(IntBinOp):
     opname = "int_rshift"
+    pysymbol = ">>"
 
 
 class OpAnd(IntBinOp):
     opname = "int_and"
+    pysymbol = "&"
 
 
 class OpOr(IntBinOp):
     opname = "int_or"
+    pysymbol = "|"
 
 
 class OpXor(IntBinOp):
     opname = "int_xor"
+    pysymbol = "^"
 
 
 class Eq(BoolBinOp):
     opname = "int_eq"
+    pysymbol = "=="
 
 
 class Ge(BoolBinOp):
     opname = "int_ge"
+    pysymbol = ">="
 
 
 class Gt(BoolBinOp):
     opname = "int_gt"
+    pysymbol = ">"
 
 
 class Le(BoolBinOp):
     opname = "int_le"
+    pysymbol = "<="
 
 
 class Lt(BoolBinOp):
     opname = "int_lt"
+    pysymbol = "<"
 
 
 class Ne(BoolBinOp):
     opname = "int_ne"
+    pysymbol = "!="
 
 
 class ShortcutAnd(BinOp):
     typ = bool
+    pysymbol = "and"
 
 
 class ShortcutOr(BinOp):
     typ = bool
+    pysymbol = "or"
 
 
 class UnaryOp(Expression):
@@ -337,6 +357,8 @@ class IntUnaryOp(UnaryOp):
 
 class Invert(IntUnaryOp):
     opname = "int_invert"
+    pysymbol = "~"
+
 
 
 class Attribute(BaseAst):
@@ -360,6 +382,28 @@ class FuncCall(Expression):
         self.args = args
         # XXX type checks
 
+
+precedence_classes = [
+    ShortcutOr,
+    ShortcutAnd,
+    # NOT,
+    (Eq, Ge, Gt, Le, Lt, Ne),
+    OpOr,
+    OpXor,
+    OpAnd,
+    (LShift, ARShift, URShift),
+    (Add, Sub),
+    (Mul, Div),
+    Invert,
+    (MethodCall, Attribute),
+    (Name, Number),
+]
+
+for i, tup in enumerate(precedence_classes):
+    if not isinstance(tup, tuple):
+        tup = (tup, )
+    for cls in tup:
+        cls.precedence = i
 
 # ____________________________________________________________
 # parser
@@ -1033,7 +1077,9 @@ class TypingVisitor(Visitor):
             return int
         if ast.name not in self.bindings:
             self._error("variable %s is not defined", ast)
-        return self.bindings[ast.name]
+        typ = self.bindings[ast.name]
+        ast.typ = typ
+        return typ
 
     def visit_Number(self, ast):
         return ast.typ
@@ -1087,7 +1133,7 @@ def test_typecheck_all():
     ast = parse(MANY_RULES)
     t = TypingVisitor()
     for rule in ast.rules:
-        t.visit(rule)
+        t.visit(rule) # mainly "don't crash" for now
 
 # ___________________________________________________________________________
 
@@ -1483,7 +1529,10 @@ class Codegen(object):
             args = []
             for arg in target.args:
                 if isinstance(arg, PatternVar):
-                    args.append(self.bindings[arg.name])
+                    if arg.name.startswith('C'):
+                        args.append("ConstInt(%s)" % self.bindings[arg.name])
+                    else:
+                        args.append(self.bindings[arg.name])
                 elif isinstance(arg, PatternConst):
                     args.append("ConstInt(%s)" % arg.const)
                 else:
@@ -1533,12 +1582,32 @@ class Codegen(object):
                     if isinstance(el, Check):
                         import pdb;pdb.set_trace()
                     elif isinstance(el, Compute):
-                        import pdb;pdb.set_trace()
+                        self.generate_compute(el)
                     else:
                         assert 0
                 self.generate_target(rule.target)
                 self.emit("return")
                 self.level = currlevel
+
+    def generate_compute(self, el):
+        self.bindings[el.name] = el.name
+        res = self.generate_expr(el.expr)
+        self.emit("%s = %s" % (el.name, res))
+
+    def generate_expr(self, expr, prec=0):
+        if isinstance(expr, BinOp):
+            left_prec = expr.left.precedence
+            right_prec = expr.right.precedence - 1 # all left assoc for now
+            left = self.generate_expr(expr.left, left_prec)
+            right = self.generate_expr(expr.right, right_prec)
+            res = "%s %s %s" % (left, expr.pysymbol, right)
+            if prec > expr.precedence:
+                res = "(" + res + ")"
+            return res
+        elif isinstance(expr, Name):
+            return expr.name
+        else:
+            import pdb;pdb.set_trace()
 
     def generate_code(self, ast):
         per_op = defaultdict(list)
@@ -1562,8 +1631,6 @@ sub_zero_neg: int_sub(0, x)
     => int_neg(x)
 sub_add_const: int_sub(int_add(x, C), C) # nonsense rule, but I want to see const matching working
     => x
-    """
-    """
 sub_add_consts: int_sub(int_add(x, C1), C2)
     C = C2 - C1
     => int_sub(x, C)
@@ -1636,6 +1703,36 @@ def optimize_INT_SUB(self, op):
         newop = self.replace_op_with(op, rop.INT_NEG, args=[arg_1])
         self.optimizer.send_extra_operation(newop)
         return
+    # sub_add_consts: int_sub(int_add(x, C1), C2) => int_sub(x, C)
+    arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
+    if arg_0_int_add is not None:
+        arg_0_int_add_0 = get_box_replacement(arg_0.getarg(0))
+        b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
+        arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
+        b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
+        if b_arg_0_int_add_1.is_constant():
+            C_arg_0_int_add_1 = b_arg_0_int_add_1.get_constant_int()
+            if b_arg_1.is_constant():
+                C_arg_1 = b_arg_1.get_constant_int()
+                C = C2 - C1
+                newop = self.replace_op_with(op, rop.INT_SUB, args=[arg_0_int_add_0, ConstInt(C)])
+                self.optimizer.send_extra_operation(newop)
+                return
+    # sub_add_consts: int_sub(int_add(C1, x), C2) => int_sub(x, C)
+    arg_0_int_add = self.optimizer.as_operation(arg_0, rop.INT_ADD)
+    if arg_0_int_add is not None:
+        arg_0_int_add_0 = get_box_replacement(arg_0.getarg(0))
+        b_arg_0_int_add_0 = self.getintbound(arg_0_int_add_0)
+        arg_0_int_add_1 = get_box_replacement(arg_0.getarg(1))
+        b_arg_0_int_add_1 = self.getintbound(arg_0_int_add_1)
+        if b_arg_0_int_add_0.is_constant():
+            C_arg_0_int_add_0 = b_arg_0_int_add_0.get_constant_int()
+            if b_arg_1.is_constant():
+                C_arg_1 = b_arg_1.get_constant_int()
+                C = C2 - C1
+                newop = self.replace_op_with(op, rop.INT_SUB, args=[arg_0_int_add_1, ConstInt(C)])
+                self.optimizer.send_extra_operation(newop)
+                return
 """
     )
 
