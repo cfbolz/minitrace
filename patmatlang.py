@@ -1613,7 +1613,7 @@ class Codegen(object):
         elif isinstance(expr, Attribute):
             return "%s.%s" % (expr.varname, expr.attrname)
         elif isinstance(expr, Number):
-            return expr.value
+            return str(expr.value)
         elif isinstance(expr, UnaryOp):
             sub_prec = expr.precedence
             sub = self.generate_expr(expr.left, sub_prec + 1)
@@ -1621,6 +1621,14 @@ class Codegen(object):
             if prec > expr.precedence:
                 res = "(" + res + ")"
             return res
+        elif isinstance(expr, MethodCall):
+            sub_prec = expr.precedence
+            receiver = self.generate_expr(expr.value)
+            args = [self.generate_expr(arg) for arg in expr.args]
+            return "%s.%s(%s)" % (receiver, expr.methname, ", ".join(args))
+        elif isinstance(expr, FuncCall):
+            args = [self.generate_expr(arg) for arg in expr.args]
+            return "%s(%s)" % (expr.funcname, ", ".join(args))
         else:
             import pdb;pdb.set_trace()
 
@@ -1776,6 +1784,10 @@ def optimize_INT_AND(self, op):
 """
     )
 
+def test_generate_code_many():
+    codegen = Codegen()
+    res = codegen.generate_code(parse(MANY_RULES))
+    print(res)
 
 def print_class(name, *attrs):
     body = "\n        ".join(["self.%s = %s" % (attr, attr) for attr in attrs])
