@@ -259,8 +259,10 @@ def round_up_pow2_min1(val):
     else:
         # z3 logic
         res = val
-        for i in range(1, INTEGER_WIDTH):
+        i = 1
+        while i <= INTEGER_WIDTH:
             res |= res >> i
+            i <<= 1
         return res
 
 def same_sign(a, b):
