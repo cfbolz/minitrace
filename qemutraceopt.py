@@ -185,10 +185,16 @@ class OptInfo:
         ones = sum_ones & ~unknowns
         zeros = ones ^ unknowns
 
-        # TODO: this is imprecise. the << 1 is not needed, if we know that self
-        # and other have different signs
-        s_mask = (self.best_s_mask & other.best_s_mask) << 1
+        s_mask = (self.best_s_mask & other.best_s_mask) << self._addition_s_mask_needed_shift(other)
         return OptInfo(zeros, ones, s_mask)
+
+    def _addition_s_mask_needed_shift(self, other):
+        if isinstance(self.zeros, int):
+            if self.is_sign_known() and other.is_sign_known() and not same_sign(self.ones, other.ones):
+                return 0
+            return 1
+        else:
+            return z3.If(z3.And(self.is_sign_known(), other.is_sign_known(), z3.Not(same_sign(self.ones, other.ones))), BitVecVal(0), BitVecVal(1))
 
     def abstract_sub(self, other):
         diff_ones = self.ones - other.ones
@@ -228,6 +234,18 @@ class OptInfo:
         #                   x | 0 == x
         return other.ones | ~self.zeros == -1
 
+    def is_sign_known(self):
+        # if positive: 0...0?...?
+        #     zeros  = 0...01...1 positive
+        #     ones   = 0...00...0 positive
+        # if negative: 1...1?...?
+        #     zeros  = 1...11...1 negative
+        #     ones   = 1...10...0 negative
+        # if unknown:  ?...??...?
+        #     zeros  = 1...11...1 positive
+        #     ones   = 0...00...0 negative
+        return same_sign(self.zeros, self.ones)
+
 
 def round_up_pow2_min1(val):
     # sets all bits right of leftmost set bit
@@ -249,10 +267,10 @@ def same_sign(a, b):
     """ Return True iff a and b have the same sign """
     return (a ^ b) >= 0
 
-def same_sign_as_int(a, b):
-    if isinstance(a, int) and isinstance(b, int):
-        return int(same_sign)
-    return z3.If(same_sign(a, b), BitVecVal(1), BitVecVal(0))
+def bool_to_int(a):
+    if isinstance(a, (bool, int)):
+        return int(a)
+    return z3.If(a, BitVecVal(1), BitVecVal(0))
 
 
 def test_round_up_pow2_min1():
@@ -385,9 +403,7 @@ def test_add_smask_implied_from_knownbits():
     k2 = OptInfo.from_str('...1') # -1
     assert k2.best_s_mask != 0
     k3 = k1.abstract_add(k2)
-    # TODO: this can be even better (~1 is the most precise s_mask) but it
-    # requires reasoning about the signs
-    assert k3.best_s_mask == ~0b11
+    assert k3.best_s_mask == ~0b1
 
 
 def test_sub():
@@ -608,16 +624,11 @@ def test_z3_round_up_pow2_min1():
     prove(z3.Implies(n1 >= 0, pow2 & (pow2 - 1) == 0), solver)
     prev_pow2_min1 = (pow2 >> 1) - 1
     prove(z3.Implies(n1 >= 0, prev_pow2_min1 < n1), solver)
-    return
-    if val < 0:
-        assert rounded == -1
-    else:
-        assert rounded >= val
-        pow2 = rounded + 1
-        assert pow2 & (pow2 - 1) == 0
-        prev_pow2_min1 = pow2 // 2 - 1
-        assert prev_pow2_min1 < val
 
+def test_z3_known_sign():
+    solver, k1, n1, _, n2 = z3_setup_variables()
+    solver.add(k1.contains(n2))
+    prove(z3.Implies(k1.is_sign_known(), (n1 >= 0) == (n2 >= 0)), solver)
 
 def test_z3_abstract_invert():
     solver, k1, n1, _, _ = z3_setup_variables()
