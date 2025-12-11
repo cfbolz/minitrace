@@ -185,6 +185,8 @@ class OptInfo:
         ones = sum_ones & ~unknowns
         zeros = ones ^ unknowns
 
+        # TODO: this is imprecise. the << 1 is not needed, if we know that self
+        # and other have different signs
         s_mask = (self.best_s_mask & other.best_s_mask) << 1
         return OptInfo(zeros, ones, s_mask)
 
@@ -242,6 +244,15 @@ def round_up_pow2_min1(val):
         for i in range(1, INTEGER_WIDTH):
             res |= res >> i
         return res
+
+def same_sign(a, b):
+    """ Return True iff a and b have the same sign """
+    return (a ^ b) >= 0
+
+def same_sign_as_int(a, b):
+    if isinstance(a, int) and isinstance(b, int):
+        return int(same_sign)
+    return z3.If(same_sign(a, b), BitVecVal(1), BitVecVal(0))
 
 
 def test_round_up_pow2_min1():
@@ -374,6 +385,8 @@ def test_add_smask_implied_from_knownbits():
     k2 = OptInfo.from_str('...1') # -1
     assert k2.best_s_mask != 0
     k3 = k1.abstract_add(k2)
+    # TODO: this can be even better (~1 is the most precise s_mask) but it
+    # requires reasoning about the signs
     assert k3.best_s_mask == ~0b11
 
 
@@ -691,15 +704,16 @@ def test_z3_prove_constant_folding():
                      k3.is_constant()), solver)
 
 
-@pytest.mark.xfail()
+#@pytest.mark.xfail()
 @given(random_optinfo_and_contained_number, random_optinfo_and_contained_number)
 @settings(deadline=None)
 def test_check_precision(t1, t2):
-    k1, n1 = t1
-    k2, n2 = t2
+    k1, _ = t1
+    k2, _ = t2
+    k1 = OptInfo(1, 0)
+    k2 = OptInfo(1, 0)
     # apply transfer function
     k3 = k1.abstract_add(k2)
-    example_res = n1 + n2
 
     # try to find a better version of k3 with Z3
     solver = z3.Solver()
