@@ -28,7 +28,11 @@ class OptInfo:
 
     def is_well_formed(self):
         # a bit cannot be both 1 and 0
-        return self.ones & ~self.zeros == 0
+        # also, s_mask is not positive (the highest bit must always be set, because
+        # it is equal to itself. we also allow zero for "the sign bit
+        # infinitely far to the left" in the arbitrary precision formulation of
+        # this)
+        return (self.ones & ~self.zeros == 0) & (self.s_mask <= 0)
 
     @staticmethod
     def from_constant(const : int):
@@ -42,6 +46,11 @@ class OptInfo:
         with ...1 to mean that all higher bits are 1, or ...? to mean that all
         higher bits are unknown. Otherwise it is assumed that the higher bits
         are all 0. """
+        s, middle, s_mask_s = s.partition(" with s_mask=")
+        if middle:
+            s_mask = eval(s_mask_s)
+        else:
+            s_mask = 0
         ones, unknowns = 0, 0
         startindex = 0
         if s.startswith("...?"):
@@ -58,12 +67,14 @@ class OptInfo:
                 ones |= 1
             elif c == '?':
                 unknowns |= 1
-        return OptInfo.from_ones_unknowns(ones, unknowns)
+            else:
+                assert c == '0'
+        return OptInfo.from_ones_unknowns(ones, unknowns, s_mask)
 
     @staticmethod
-    def from_ones_unknowns(ones, unknowns):
+    def from_ones_unknowns(ones, unknowns, s_mask=0):
         zeros = ones ^ unknowns
-        return OptInfo(zeros, ones)
+        return OptInfo(zeros, ones, s_mask)
 
     @staticmethod
     def all_unknown():
@@ -127,7 +138,7 @@ class OptInfo:
         if not res:
             res.append('0')
         res.reverse()
-        return "".join(res)
+        return "".join(res) + ("" if self.s_mask == 0 else f" with s_mask={self.s_mask:x}")
 
     def contains(self, value : int):
         """ Check whether the OptInfo instance contains the concrete integer
@@ -212,6 +223,12 @@ def test_from_str():
     assert str(OptInfo.from_ones_unknowns(0b101, 0b10)) == '1?1'
     assert str(OptInfo.from_ones_unknowns(~0b1111, 0b10)) == '...100?0'
     assert str(OptInfo.from_ones_unknowns(1, ~0b1)) == '...?1'
+
+    x = OptInfo.from_str('...?00 with s_mask=-0x100')
+    assert x.zeros == ~0b11
+    assert x.ones == 0
+    assert x.s_mask == -0x100
+
 
 
 def test_contains():
