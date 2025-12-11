@@ -18,8 +18,8 @@ class OptInfo:
     every bit can be in one of three states, 0, 1, or ?. the fourth
     combination, where both ones=1 and zeros=0 in the same place, is forbidden.
     """
-    zeros : int
-    ones : int
+    zeros : int = -1
+    ones : int = 0
     s_mask : int = 0 # mask bit is 1 if value bit matches msb
 
     def __post_init__(self):
@@ -90,9 +90,11 @@ class OptInfo:
         return self.unknowns == 0
 
     def __repr__(self):
-        if self.is_constant():
-            return f"OptInfo.from_constant({self.ones})"
-        return f"OptInfo({self.zeros}, {self.ones})"
+        if self.s_mask == 0:
+            if self.is_constant():
+                return f"OptInfo.from_constant({self.ones})"
+            return f"OptInfo({self.zeros}, {self.ones})"
+        return f"OptInfo({self.zeros}, {self.ones}, {self.s_mask})"
 
     def __str__(self):
         res = []
@@ -132,7 +134,8 @@ class OptInfo:
         `value`. """
         # check whether value matches the bit pattern. in the places where we
         # know the bits, the value must agree with ones.
-        return value & self.knowns == self.ones
+        s_masked = value & self.s_mask
+        return (value & self.knowns == self.ones) & ((s_masked == 0) | (s_masked == self.s_mask))
 
     def abstract_invert(self):
         return OptInfo(~self.ones, ~self.zeros)
@@ -222,6 +225,21 @@ def test_contains():
     for i in range(-101, 100):
         assert k2.contains(i) == (i & 1)
 
+def test_contains_smask():
+    k1 = OptInfo(s_mask=-1)
+    # 0 or all 1, ie -1
+    assert k1.contains(0)
+    assert k1.contains(-1)
+    for i in [1, 2, 3, 4, 100, 100000]:
+        assert not k1.contains(i)
+    k1 = OptInfo(s_mask=(-1) << 1)
+    assert k1.contains(0)
+    assert k1.contains(1)
+    assert k1.contains(-1)
+    assert k1.contains(-2)
+    for i in [2, 3, 4, 100, 100000]:
+        assert not k1.contains(i)
+
 def test_invert():
     k1 = OptInfo.from_str('01?01?01?')
     k2 = k1.abstract_invert()
@@ -237,6 +255,25 @@ def test_and():
     k2 = OptInfo.from_str('000111???')
     res = k1.abstract_and(k2)     # should be: 0...00001?0??
     assert str(res) ==   "1?0??"
+
+def test_and_smask():
+    k1 = OptInfo(s_mask=~0b111)
+    low_k1, high_h1 = (-2**3, 2**3-1)
+    for n1 in range(low_k1, high_h1 + 1):
+        assert k1.contains(n1)
+    assert not k1.contains(low_k1 - 1)
+    assert not k1.contains(high_h1 + 1)
+    k2 = OptInfo(s_mask=~0b11111)
+    low_k2, high_h2 = (-2**5, 2**5-1)
+    for n2 in range(low_k2, high_h2 + 1):
+        assert k2.contains(n2)
+    assert not k2.contains(low_k2 - 1)
+    assert not k2.contains(high_h2 + 1)
+    res = k1.abstract_and(k2)     # should be: 0...00001?0??
+    for n1 in range(low_k1, high_h1 + 1):
+        for n2 in range(low_k2, high_h2 + 1):
+            assert res.contains(n1 & n2)
+
 
 def test_or():
     k1 = OptInfo.from_str('01?01?01?')
@@ -297,28 +334,47 @@ ints_special = strategies.sampled_from(
 
 ints = ints_special | strategies.integers()
 
-def build_knownbits_and_contained_number(concrete_value, unknowns):
+def build_optinfo_and_contained_number(concrete_value, unknowns):
     return OptInfo.from_ones_unknowns(concrete_value & ~unknowns, unknowns), concrete_value
 
-random_knownbits_and_contained_number = strategies.builds(
-    build_knownbits_and_contained_number,
+random_optinfo_and_contained_number = strategies.builds(
+    build_optinfo_and_contained_number,
     ints, ints
 )
 
-constant_knownbits = strategies.builds(
+def build_optinfo_and_contained_number_with_smask(concrete_value, unknowns, extra_signed_width):
+    # to construct an s_mask, first we compute the tightest s_mask that would
+    # contain concrete_value. afterwards we lose extra_signed_width of values by left shift
+    s_mask = -1
+    while 1:
+        if OptInfo(s_mask=s_mask).contains(concrete_value):
+            break
+        s_mask <<= 1
+    res = OptInfo.from_ones_unknowns(concrete_value & ~unknowns, unknowns)
+    return OptInfo(res.zeros, res.ones, s_mask << extra_signed_width), concrete_value
+
+
+random_optinfo_and_contained_number_with_smask = strategies.builds(
+    build_optinfo_and_contained_number_with_smask,
+    ints, ints, strategies.integers(min_value=0, max_value=INTEGER_WIDTH)
+)
+
+
+constant_optinfo = strategies.builds(
     lambda value: (OptInfo.from_constant(value), value),
     ints
 )
 
-knownbits_and_contained_number = constant_knownbits | random_knownbits_and_contained_number
 
-@given(knownbits_and_contained_number)
+optinfo_and_contained_number = constant_optinfo | random_optinfo_and_contained_number | random_optinfo_and_contained_number_with_smask
+
+@given(optinfo_and_contained_number)
 def test_hypothesis_contains(t1):
     k1, n1 = t1
     print(OptInfo.from_constant(n1), k1)
     assert k1.contains(n1)
 
-@given(knownbits_and_contained_number)
+@given(optinfo_and_contained_number)
 def test_hypothesis_str_roundtrips(t1):
     k1, n1 = t1
     s = str(k1)
@@ -327,7 +383,7 @@ def test_hypothesis_str_roundtrips(t1):
     assert k1.unknowns == k2.unknowns
 
 
-@given(knownbits_and_contained_number)
+@given(optinfo_and_contained_number)
 def test_hypothesis_invert(t1):
     k1, n1 = t1
     k2 = k1.abstract_invert()
@@ -335,7 +391,7 @@ def test_hypothesis_invert(t1):
     assert k2.contains(n2)
 
 
-@given(knownbits_and_contained_number, knownbits_and_contained_number)
+@given(optinfo_and_contained_number, optinfo_and_contained_number)
 def test_hypothesis_and(t1, t2):
     k1, n1 = t1
     k2, n2 = t2
@@ -344,7 +400,7 @@ def test_hypothesis_and(t1, t2):
     assert k3.contains(n3)
 
 
-@given(knownbits_and_contained_number, knownbits_and_contained_number)
+@given(optinfo_and_contained_number, optinfo_and_contained_number)
 def test_hypothesis_or(t1, t2):
     k1, n1 = t1
     k2, n2 = t2
@@ -353,7 +409,7 @@ def test_hypothesis_or(t1, t2):
     assert k3.contains(n3)
 
 
-@given(knownbits_and_contained_number, knownbits_and_contained_number)
+@given(optinfo_and_contained_number, optinfo_and_contained_number)
 def test_hypothesis_add(t1, t2):
     k1, n1 = t1
     k2, n2 = t2
@@ -361,7 +417,7 @@ def test_hypothesis_add(t1, t2):
     n3 = n1 + n2
     assert k3.contains(n3)
 
-@given(knownbits_and_contained_number, knownbits_and_contained_number)
+@given(optinfo_and_contained_number, optinfo_and_contained_number)
 def test_hypothesis_sub(t1, t2):
     k1, n1 = t1
     k2, n2 = t2
@@ -369,13 +425,13 @@ def test_hypothesis_sub(t1, t2):
     n3 = n1 - n2
     assert k3.contains(n3)
 
-@given(knownbits_and_contained_number)
+@given(optinfo_and_contained_number)
 def test_hypothesis_nonnegative(t1):
     k1, n1 = t1
     if n1 < 0:
         assert not k1.nonnegative()
 
-@given(knownbits_and_contained_number, knownbits_and_contained_number)
+@given(optinfo_and_contained_number, optinfo_and_contained_number)
 def test_hypothesis_eq(t1, t2):
     k1, n1 = t1
     k2, n2 = t2
@@ -507,7 +563,7 @@ def test_z3_prove_constant_folding():
     prove(z3.Implies(z3.And(k1.is_constant(), k2.is_constant()),
                      k3.is_constant()), solver)
 
-@given(random_knownbits_and_contained_number, random_knownbits_and_contained_number)
+@given(random_optinfo_and_contained_number, random_optinfo_and_contained_number)
 @settings(deadline=None)
 def test_check_precision(t1, t2):
     k1, n1 = t1
