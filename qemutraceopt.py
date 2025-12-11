@@ -27,12 +27,15 @@ class OptInfo:
             assert self.is_well_formed()
 
     def is_well_formed(self):
-        # a bit cannot be both 1 and 0
-        # also, s_mask is not positive (the highest bit must always be set, because
+        # - a bit cannot be both 1 and 0
+        # - also, s_mask is not positive (the highest bit must always be set, because
         # it is equal to itself. we also allow zero for "the sign bit
         # infinitely far to the left" in the arbitrary precision formulation of
         # this)
-        return (self.ones & ~self.zeros == 0) & (self.s_mask <= 0)
+        # - s_mask also needs to all ones, followed by all zeros (ie if you
+        # bitflip it, and add 1, you get a power of 2)        
+        pow2 = ~self.s_mask + 1
+        return (self.ones & ~self.zeros == 0) & (self.s_mask <= 0) & (pow2 & (pow2 - 1) == 0)
 
     @staticmethod
     def from_constant(const : int):
@@ -138,7 +141,7 @@ class OptInfo:
         if not res:
             res.append('0')
         res.reverse()
-        return "".join(res) + ("" if self.s_mask == 0 else f" with s_mask={self.s_mask:x}")
+        return "".join(res) + ("" if self.s_mask == 0 else f" with s_mask=-0x{abs(self.s_mask):x}")
 
     def contains(self, value : int):
         """ Check whether the OptInfo instance contains the concrete integer
@@ -154,7 +157,8 @@ class OptInfo:
     def abstract_and(self, other):
         ones = self.ones & other.ones
         zeros = self.zeros & other.zeros
-        return OptInfo(zeros, ones)
+        s_mask = self.s_mask & other.s_mask
+        return OptInfo(zeros, ones, s_mask)
 
     def abstract_or(self, other):
         ones = self.ones | other.ones
@@ -168,7 +172,8 @@ class OptInfo:
         ones_carries = all_carries ^ sum_ones
         unknowns = self.unknowns | other.unknowns | ones_carries
         ones = sum_ones & ~unknowns
-        return OptInfo.from_ones_unknowns(ones, unknowns)
+        s_mask = (self.s_mask & other.s_mask) << 1
+        return OptInfo.from_ones_unknowns(ones, unknowns, s_mask)
 
     def abstract_sub(self, other):
         diff_ones = self.ones - other.ones
@@ -287,9 +292,12 @@ def test_and_smask():
     assert not k2.contains(low_k2 - 1)
     assert not k2.contains(high_h2 + 1)
     res = k1.abstract_and(k2)     # should be: 0...00001?0??
+    assert res.s_mask == ~0b11111
     for n1 in range(low_k1, high_h1 + 1):
         for n2 in range(low_k2, high_h2 + 1):
             assert res.contains(n1 & n2)
+    assert not res.contains(low_k2 - 1)
+    assert not res.contains(high_h2 + 1)
 
 
 def test_or():
@@ -299,6 +307,12 @@ def test_or():
     assert str(res) ==   "1?111?1?"
 
 def test_add():
+    k1 = OptInfo.from_str('0?10?10?10 with s_mask=-0x100')
+    k2 = OptInfo.from_str('0???111000 with s_mask=-0x1000')
+    res = k1.abstract_add(k2)
+    assert str(res) ==   "?????01?10 with s_mask=-0x2000"
+
+def test_add_smask():
     k1 = OptInfo.from_str('0?10?10?10')
     k2 = OptInfo.from_str('0???111000')
     res = k1.abstract_add(k2)
@@ -460,8 +474,6 @@ def test_hypothesis_eq(t1, t2):
 
 
 
-INTEGER_WIDTH = 64
-
 def BitVec(name):
     return z3.BitVec(name, INTEGER_WIDTH)
 
@@ -472,12 +484,14 @@ def z3_setup_variables():
     solver = z3.Solver()
 
     n1 = BitVec("n1")
-    k1 = OptInfo(BitVec("n1_zeros"), BitVec("n1_ones"))
+    k1 = OptInfo(BitVec("n1_zeros"), BitVec("n1_ones"), BitVec("n1_smask"))
     solver.add(k1.contains(n1))
+    solver.add(k1.is_well_formed())
 
     n2 = BitVec("n2")
-    k2 = OptInfo(BitVec("n2_zeros"), BitVec("n2_ones"))
+    k2 = OptInfo(BitVec("n2_zeros"), BitVec("n2_ones"), BitVec("n2_smask"))
     solver.add(k2.contains(n2))
+    solver.add(k2.is_well_formed())
     return solver, k1, n1, k2, n2
 
 def prove(cond, solver):
@@ -489,10 +503,12 @@ def prove(cond, solver):
         global model
         model = solver.model()
         print(f"n1={model.eval(n1)}, n2={model.eval(n2)}")
-        counter_example_k1 = OptInfo(model.eval(k1.ones).as_signed_long(),
-                                       model.eval(k1.unknowns).as_signed_long())
-        counter_example_k2 = OptInfo(model.eval(k2.ones).as_signed_long(),
-                                       model.eval(k2.unknowns).as_signed_long())
+        counter_example_k1 = OptInfo(model.eval(k1.zeros).as_signed_long(),
+                                     model.eval(k1.ones).as_signed_long(),
+                                     model.eval(k1.s_mask).as_signed_long())
+        counter_example_k2 = OptInfo(model.eval(k2.zeros).as_signed_long(),
+                                     model.eval(k2.ones).as_signed_long(),
+                                     model.eval(k2.s_mask).as_signed_long())
         print(f"k1={counter_example_k1}, k2={counter_example_k2}")
         print(f"but {cond=} evaluates to {model.eval(cond)}")
         raise ValueError(solver.model())
@@ -516,6 +532,7 @@ def test_z3_abstract_or():
     prove(k3.contains(n3), solver)
 
 def test_z3_abstract_add():
+    global solver, k1, n1, k2, n2
     solver, k1, n1, k2, n2 = z3_setup_variables()
     k3 = k1.abstract_add(k2)
     n3 = n1 + n2
