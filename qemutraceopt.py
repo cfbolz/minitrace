@@ -20,14 +20,15 @@ class OptInfo:
     """
     zeros : int
     ones : int
+    s_mask : int = 0 # mask bit is 1 if value bit matches msb
 
     def __post_init__(self):
         if isinstance(self.ones, int):
             assert self.is_well_formed()
 
     def is_well_formed(self):
-        # a bit cannot be both 1 and unknown
-        return self.ones & self.unknowns == 0
+        # a bit cannot be both 1 and 0
+        return self.ones & ~self.zeros == 0
 
     @staticmethod
     def from_constant(const : int):
@@ -137,15 +138,14 @@ class OptInfo:
         return OptInfo(~self.ones, ~self.zeros)
 
     def abstract_and(self, other):
-        ones = self.ones & other.ones # known ones
-        knowns = self.zeros | other.zeros | ones
-        return OptInfo.from_ones_unknowns(ones, ~knowns)
+        ones = self.ones & other.ones
+        zeros = self.zeros & other.zeros
+        return OptInfo(zeros, ones)
 
     def abstract_or(self, other):
-        ones = self.ones | other.ones # known ones
-        zeros = self.zeros & other.zeros
-        knowns = ones | zeros
-        return OptInfo.from_ones_unknowns(ones, ~knowns)
+        ones = self.ones | other.ones
+        zeros = self.zeros | other.zeros
+        return OptInfo(zeros, ones)
 
     def abstract_add(self, other):
         sum_ones = self.ones + other.ones
@@ -190,7 +190,7 @@ class OptInfo:
         #                   0 & anything == 0
         # for or:           1 | anything == 1
         #                   x | 0 == x
-        return other.ones | self.zeros == -1
+        return other.ones | ~self.zeros == -1
 
 
 
@@ -444,7 +444,6 @@ def test_z3_abstract_or():
 
 def test_z3_abstract_add():
     solver, k1, n1, k2, n2 = z3_setup_variables()
-    import pdb;pdb.set_trace()
     k3 = k1.abstract_add(k2)
     n3 = n1 + n2
     prove(k3.contains(n3), solver)
@@ -478,7 +477,7 @@ def z3_abstract_eq(k1, k2):
 
     # in the first two cases, unknowns is 0, 1 otherwise
     unknowns = z3_cond(z3.Or(case1cond, case2cond), 0, 1)
-    return OptInfo(ones, unknowns)
+    return OptInfo.from_ones_unknowns(ones, unknowns)
 
 def test_z3_abstract_eq_logic():
     solver, k1, n1, k2, n2 = z3_setup_variables()
