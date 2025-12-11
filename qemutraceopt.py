@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from typing import Optional, Any
 
 
-# start an abstract value that uses "known bits"
-
 @dataclass(eq=False)
 class OptInfo:
     """ An abstract domain representing sets of integers where some bits of the
@@ -33,7 +31,7 @@ class OptInfo:
         # infinitely far to the left" in the arbitrary precision formulation of
         # this)
         # - s_mask also needs to all ones, followed by all zeros (ie if you
-        # bitflip it, and add 1, you get a power of 2)        
+        # bitflip it, and add 1, you get a power of 2)
         pow2 = ~self.s_mask + 1
         return (self.ones & ~self.zeros == 0) & (self.s_mask <= 0) & (pow2 & (pow2 - 1) == 0)
 
@@ -98,6 +96,13 @@ class OptInfo:
         # the knowns are just the unknowns, inverted
         return ~self.unknowns
 
+    @property
+    def best_s_mask(self):
+        s_mask = ~round_up_pow2_min1(~self.s_mask)
+        s_mask_from_ones = ~round_up_pow2_min1(~self.ones)
+        s_mask_from_zeros = ~round_up_pow2_min1(self.zeros)
+        return s_mask_from_zeros | s_mask | s_mask_from_ones
+
     def is_constant(self):
         """ Check if the OptInfo instance represents a constant. """
         # it's a constant if there are no unknowns
@@ -141,7 +146,12 @@ class OptInfo:
         if not res:
             res.append('0')
         res.reverse()
-        return "".join(res) + ("" if self.s_mask == 0 else f" with s_mask=-0x{abs(self.s_mask):x}")
+        res = "".join(res)
+        # the s_mask can be implied by ones and zeros, in which case we don't need to show it
+        o = OptInfo(self.zeros, self.ones)
+        if o.best_s_mask != self.best_s_mask:
+            res += f" with s_mask=-0x{abs(self.best_s_mask):x}"
+        return res
 
     def contains(self, value : int):
         """ Check whether the OptInfo instance contains the concrete integer
@@ -157,13 +167,13 @@ class OptInfo:
     def abstract_and(self, other):
         ones = self.ones & other.ones
         zeros = self.zeros & other.zeros
-        s_mask = self.s_mask & other.s_mask
+        s_mask = self.best_s_mask & other.best_s_mask
         return OptInfo(zeros, ones, s_mask)
 
     def abstract_or(self, other):
         ones = self.ones | other.ones
         zeros = self.zeros | other.zeros
-        s_mask = self.s_mask & other.s_mask
+        s_mask = self.best_s_mask & other.best_s_mask
         return OptInfo(zeros, ones, s_mask)
 
     def abstract_add(self, other):
@@ -175,7 +185,7 @@ class OptInfo:
         ones = sum_ones & ~unknowns
         zeros = ones ^ unknowns
 
-        s_mask = (self.s_mask & other.s_mask) << 1
+        s_mask = (self.best_s_mask & other.best_s_mask) << 1
         return OptInfo(zeros, ones, s_mask)
 
     def abstract_sub(self, other):
@@ -184,7 +194,7 @@ class OptInfo:
         unknowns = self.unknowns | other.unknowns | val_borrows
         ones = diff_ones & ~unknowns
 
-        s_mask = (self.s_mask & other.s_mask) << 1
+        s_mask = (self.best_s_mask & other.best_s_mask) << 1
         return OptInfo.from_ones_unknowns(ones, unknowns, s_mask)
 
     def abstract_eq(self, other):
@@ -217,6 +227,34 @@ class OptInfo:
         return other.ones | ~self.zeros == -1
 
 
+def round_up_pow2_min1(val):
+    # sets all bits right of leftmost set bit
+    if isinstance(val, int):
+        if val < 0:
+            return -1
+        pow2 = 1
+        while pow2 - 1 < val:
+            pow2 <<= 1
+        return pow2 - 1
+    else:
+        # z3 logic
+        res = val
+        for i in range(1, INTEGER_WIDTH):
+            res |= res >> i
+        return res
+
+
+def test_round_up_pow2_min1():
+    assert round_up_pow2_min1(-1) == -1
+    assert round_up_pow2_min1(-5) == -1
+    assert round_up_pow2_min1(0) == 0
+    assert round_up_pow2_min1(2) == 3
+    assert round_up_pow2_min1(3) == 3
+    assert round_up_pow2_min1(0b100) == 0b111
+    assert round_up_pow2_min1(0b101) == 0b111
+    assert round_up_pow2_min1(0b110) == 0b111
+    assert round_up_pow2_min1(0b111) == 0b111
+    assert round_up_pow2_min1(0b1000) == 0b1111
 
 # unit tests
 
@@ -267,6 +305,13 @@ def test_contains_smask():
     for i in [2, 3, 4, 100, 100000]:
         assert not k1.contains(i)
 
+def test_implied_smask():
+    k = OptInfo.from_str('?') # 0 or 1
+    assert k.best_s_mask == ~0b1
+
+    k = OptInfo.from_constant(-1) # all 1s
+    assert k.best_s_mask == ~0b0 # all 1s
+
 def test_invert():
     k1 = OptInfo.from_str('01?01?01?')
     k2 = k1.abstract_invert()
@@ -312,22 +357,31 @@ def test_or():
     assert str(res) ==   "1?111?1?"
 
 def test_add():
-    k1 = OptInfo.from_str('0?10?10?10 with s_mask=-0x100')
-    k2 = OptInfo.from_str('0???111000 with s_mask=-0x1000')
-    res = k1.abstract_add(k2)
-    assert str(res) ==   "?????01?10 with s_mask=-0x2000"
-
-def test_add_smask():
     k1 = OptInfo.from_str('0?10?10?10')
     k2 = OptInfo.from_str('0???111000')
     res = k1.abstract_add(k2)
     assert str(res) ==   "?????01?10"
 
+def test_add_smask():
+    k1 = OptInfo.from_str('...?10?10?10 with s_mask=-0x100')
+    k2 = OptInfo.from_str('...???111000 with s_mask=-0x1000')
+    res = k1.abstract_add(k2)
+    assert str(res) ==  '...?01?10 with s_mask=-0x2000'
+
+def test_add_smask_implied_from_knownbits():
+    k1 = OptInfo.from_str('?') # 0 or 1
+    assert k1.best_s_mask != 0
+    k2 = OptInfo.from_str('...1') # -1
+    assert k2.best_s_mask != 0
+    k3 = k1.abstract_add(k2)
+    assert k3.best_s_mask == ~0b11
+
+
 def test_sub():
     k1 = OptInfo.from_str('0?10?10?10')
     k2 = OptInfo.from_str('0???111000')
     res = k1.abstract_sub(k2)
-    assert str(res) ==   "...?11?10"
+    assert str(res) ==   "...?11?10 with s_mask=-0x400"
     k1 = OptInfo.from_str(    '...1?10?10?10')
     k2 = OptInfo.from_str('...10000???111000')
     res = k1.abstract_sub(k2)
@@ -369,6 +423,20 @@ ints_special = strategies.sampled_from(
     ints_special)
 
 ints = ints_special | strategies.integers()
+
+@given(ints)
+def test_round_up_pow2_min1_hypothesis(val):
+    rounded = round_up_pow2_min1(val)
+    if val < 0:
+        assert rounded == -1
+    else:
+        assert rounded >= val
+        pow2 = rounded + 1
+        assert pow2 & (pow2 - 1) == 0
+        prev_pow2_min1 = pow2 // 2 - 1
+        assert prev_pow2_min1 < val
+
+
 
 def build_optinfo_and_contained_number(concrete_value, unknowns):
     return OptInfo.from_ones_unknowns(concrete_value & ~unknowns, unknowns), concrete_value
@@ -517,6 +585,26 @@ def prove(cond, solver):
         print(f"k1={counter_example_k1}, k2={counter_example_k2}")
         print(f"but {cond=} evaluates to {model.eval(cond)}")
         raise ValueError(solver.model())
+
+def test_z3_round_up_pow2_min1():
+    solver, k1, n1, _, _ = z3_setup_variables()
+    rounded = round_up_pow2_min1(n1)
+    prove(z3.Implies(n1 < 0, rounded == -1), solver)
+    prove(z3.Implies(n1 >= 0, rounded >= n1), solver)
+    pow2 = rounded + 1
+    prove(z3.Implies(n1 >= 0, pow2 & (pow2 - 1) == 0), solver)
+    prev_pow2_min1 = (pow2 >> 1) - 1
+    prove(z3.Implies(n1 >= 0, prev_pow2_min1 < n1), solver)
+    return
+    if val < 0:
+        assert rounded == -1
+    else:
+        assert rounded >= val
+        pow2 = rounded + 1
+        assert pow2 & (pow2 - 1) == 0
+        prev_pow2_min1 = pow2 // 2 - 1
+        assert prev_pow2_min1 < val
+
 
 def test_z3_abstract_invert():
     solver, k1, n1, _, _ = z3_setup_variables()
