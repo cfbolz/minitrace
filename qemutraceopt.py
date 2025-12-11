@@ -9,7 +9,7 @@ from typing import Optional, Any
 # start an abstract value that uses "known bits"
 
 @dataclass(eq=False)
-class KnownBits:
+class OptInfo:
     """ An abstract domain representing sets of integers where some bits of the
     integer can be known 0, or known 1, the rest is unknown. We represent this
     by two ints:
@@ -31,13 +31,13 @@ class KnownBits:
 
     @staticmethod
     def from_constant(const : int):
-        """ Construct a KnownBits corresponding to a constant, where all bits
+        """ Construct a OptInfo corresponding to a constant, where all bits
         are known."""
-        return KnownBits(const, const)
+        return OptInfo(const, const)
 
     @staticmethod
     def from_str(s):
-        """ Construct a KnownBits instance that from a string. String can start
+        """ Construct a OptInfo instance that from a string. String can start
         with ...1 to mean that all higher bits are 1, or ...? to mean that all
         higher bits are unknown. Otherwise it is assumed that the higher bits
         are all 0. """
@@ -57,18 +57,18 @@ class KnownBits:
                 ones |= 1
             elif c == '?':
                 unknowns |= 1
-        return KnownBits.from_ones_unknowns(ones, unknowns)
+        return OptInfo.from_ones_unknowns(ones, unknowns)
 
     @staticmethod
     def from_ones_unknowns(ones, unknowns):
         zeros = ones ^ unknowns
-        return KnownBits(zeros, ones)
+        return OptInfo(zeros, ones)
 
     @staticmethod
     def all_unknown():
         """ convenience constructor for the "all bits unknown" abstract value
         """
-        return KnownBits.from_str("...?")
+        return OptInfo.from_str("...?")
 
     @property
     def unknowns(self):
@@ -84,14 +84,14 @@ class KnownBits:
         return ~self.unknowns
 
     def is_constant(self):
-        """ Check if the KnownBits instance represents a constant. """
+        """ Check if the OptInfo instance represents a constant. """
         # it's a constant if there are no unknowns
         return self.unknowns == 0
 
     def __repr__(self):
         if self.is_constant():
-            return f"KnownBits.from_constant({self.ones})"
-        return f"KnownBits({self.zeros}, {self.ones})"
+            return f"OptInfo.from_constant({self.ones})"
+        return f"OptInfo({self.zeros}, {self.ones})"
 
     def __str__(self):
         res = []
@@ -127,25 +127,25 @@ class KnownBits:
         return "".join(res)
 
     def contains(self, value : int):
-        """ Check whether the KnownBits instance contains the concrete integer
+        """ Check whether the OptInfo instance contains the concrete integer
         `value`. """
         # check whether value matches the bit pattern. in the places where we
         # know the bits, the value must agree with ones.
         return value & self.knowns == self.ones
 
     def abstract_invert(self):
-        return KnownBits(~self.ones, ~self.zeros)
+        return OptInfo(~self.ones, ~self.zeros)
 
     def abstract_and(self, other):
         ones = self.ones & other.ones # known ones
         knowns = self.zeros | other.zeros | ones
-        return KnownBits.from_ones_unknowns(ones, ~knowns)
+        return OptInfo.from_ones_unknowns(ones, ~knowns)
 
     def abstract_or(self, other):
         ones = self.ones | other.ones # known ones
         zeros = self.zeros & other.zeros
         knowns = ones | zeros
-        return KnownBits.from_ones_unknowns(ones, ~knowns)
+        return OptInfo.from_ones_unknowns(ones, ~knowns)
 
     def abstract_add(self, other):
         sum_ones = self.ones + other.ones
@@ -154,26 +154,26 @@ class KnownBits:
         ones_carries = all_carries ^ sum_ones
         unknowns = self.unknowns | other.unknowns | ones_carries
         ones = sum_ones & ~unknowns
-        return KnownBits.from_ones_unknowns(ones, unknowns)
+        return OptInfo.from_ones_unknowns(ones, unknowns)
 
     def abstract_sub(self, other):
         diff_ones = self.ones - other.ones
         val_borrows = (diff_ones + self.unknowns) ^ (diff_ones - other.unknowns)
         unknowns = self.unknowns | other.unknowns | val_borrows
         ones = diff_ones & ~unknowns
-        return KnownBits.from_ones_unknowns(ones, unknowns)
+        return OptInfo.from_ones_unknowns(ones, unknowns)
 
     def abstract_eq(self, other):
         # the result is a 0, 1, or ?
 
         # if they are both the same constant, they must be equal
         if self.is_constant() and other.is_constant() and self.ones == other.ones:
-            return KnownBits.from_constant(1)
+            return OptInfo.from_constant(1)
         # check whether we have known disagreeing bits, then we know the result
         # is 0
         if self._disagrees(other):
-            return KnownBits.from_constant(0)
-        return KnownBits.from_ones_unknowns(0, 1) # an unknown boolean
+            return OptInfo.from_constant(0)
+        return OptInfo.from_ones_unknowns(0, 1) # an unknown boolean
 
     def _disagrees(self, other):
         # check whether the bits disagree in any place where both are known
@@ -197,87 +197,87 @@ class KnownBits:
 # unit tests
 
 def test_str():
-    assert str(KnownBits.from_constant(0)) == '0'
-    assert str(KnownBits.from_constant(5)) == '101'
-    assert str(KnownBits.from_ones_unknowns(0b101, 0b10)) == '1?1'
-    assert str(KnownBits.from_ones_unknowns(~0b1111, 0b10)) == '...100?0'
-    assert str(KnownBits.from_ones_unknowns(1, ~0b1)) == '...?1'
+    assert str(OptInfo.from_constant(0)) == '0'
+    assert str(OptInfo.from_constant(5)) == '101'
+    assert str(OptInfo.from_ones_unknowns(0b101, 0b10)) == '1?1'
+    assert str(OptInfo.from_ones_unknowns(~0b1111, 0b10)) == '...100?0'
+    assert str(OptInfo.from_ones_unknowns(1, ~0b1)) == '...?1'
 
 def test_from_str():
-    assert KnownBits.from_str('0')
-    assert str(KnownBits.from_constant(5)) == '101'
-    assert str(KnownBits.from_ones_unknowns(0b101, 0b10)) == '1?1'
-    assert str(KnownBits.from_ones_unknowns(~0b1111, 0b10)) == '...100?0'
-    assert str(KnownBits.from_ones_unknowns(1, ~0b1)) == '...?1'
+    assert OptInfo.from_str('0')
+    assert str(OptInfo.from_constant(5)) == '101'
+    assert str(OptInfo.from_ones_unknowns(0b101, 0b10)) == '1?1'
+    assert str(OptInfo.from_ones_unknowns(~0b1111, 0b10)) == '...100?0'
+    assert str(OptInfo.from_ones_unknowns(1, ~0b1)) == '...?1'
 
 
 def test_contains():
-    k1 = KnownBits.from_str('1?1')
+    k1 = OptInfo.from_str('1?1')
     assert k1.contains(0b111)
     assert k1.contains(0b101)
     assert not k1.contains(0b110)
     assert not k1.contains(0b011)
 
-    k2 = KnownBits.from_str('...?1') # all odd numbers
+    k2 = OptInfo.from_str('...?1') # all odd numbers
     for i in range(-101, 100):
         assert k2.contains(i) == (i & 1)
 
 def test_invert():
-    k1 = KnownBits.from_str('01?01?01?')
+    k1 = OptInfo.from_str('01?01?01?')
     k2 = k1.abstract_invert()
     assert str(k2) == '...10?10?10?'
 
-    k1 = KnownBits.from_str('...?')
+    k1 = OptInfo.from_str('...?')
     k2 = k1.abstract_invert()
     assert str(k2) == '...?'
 
 def test_and():
     # test all combinations of 0, 1, ? in one example
-    k1 = KnownBits.from_str('01?01?01?')
-    k2 = KnownBits.from_str('000111???')
+    k1 = OptInfo.from_str('01?01?01?')
+    k2 = OptInfo.from_str('000111???')
     res = k1.abstract_and(k2)     # should be: 0...00001?0??
     assert str(res) ==   "1?0??"
 
 def test_or():
-    k1 = KnownBits.from_str('01?01?01?')
-    k2 = KnownBits.from_str('000111???')
+    k1 = OptInfo.from_str('01?01?01?')
+    k2 = OptInfo.from_str('000111???')
     res = k1.abstract_or(k2)     # should be:  0...01?111?1?
     assert str(res) ==   "1?111?1?"
 
 def test_add():
-    k1 = KnownBits.from_str('0?10?10?10')
-    k2 = KnownBits.from_str('0???111000')
+    k1 = OptInfo.from_str('0?10?10?10')
+    k2 = OptInfo.from_str('0???111000')
     res = k1.abstract_add(k2)
     assert str(res) ==   "?????01?10"
 
 def test_sub():
-    k1 = KnownBits.from_str('0?10?10?10')
-    k2 = KnownBits.from_str('0???111000')
+    k1 = OptInfo.from_str('0?10?10?10')
+    k2 = OptInfo.from_str('0???111000')
     res = k1.abstract_sub(k2)
     assert str(res) ==   "...?11?10"
-    k1 = KnownBits.from_str(    '...1?10?10?10')
-    k2 = KnownBits.from_str('...10000???111000')
+    k1 = OptInfo.from_str(    '...1?10?10?10')
+    k2 = OptInfo.from_str('...10000???111000')
     res = k1.abstract_sub(k2)
     assert str(res) ==   "111?????11?10"
 
 
 def test_eq():
-    k1 = KnownBits.from_str('...?')
-    k2 = KnownBits.from_str('...?')
+    k1 = OptInfo.from_str('...?')
+    k2 = OptInfo.from_str('...?')
     assert str(k1.abstract_eq(k2)) == '?'
-    k1 = KnownBits.from_constant(10)
+    k1 = OptInfo.from_constant(10)
     assert str(k1.abstract_eq(k1)) == '1'
-    k1 = KnownBits.from_constant(10)
-    k2 = KnownBits.from_constant(20)
+    k1 = OptInfo.from_constant(10)
+    k2 = OptInfo.from_constant(20)
     assert str(k1.abstract_eq(k2)) == '0'
 
 
 def test_nonnegative():
-    k1 = KnownBits.from_str('0?10?10?10')
+    k1 = OptInfo.from_str('0?10?10?10')
     assert k1.nonnegative()
-    k1 = KnownBits.from_str('...?0')
+    k1 = OptInfo.from_str('...?0')
     assert not k1.nonnegative()
-    k1 = KnownBits.from_constant(-1)
+    k1 = OptInfo.from_constant(-1)
     assert not k1.nonnegative()
 
 
@@ -298,7 +298,7 @@ ints_special = strategies.sampled_from(
 ints = ints_special | strategies.integers()
 
 def build_knownbits_and_contained_number(concrete_value, unknowns):
-    return KnownBits.from_ones_unknowns(concrete_value & ~unknowns, unknowns), concrete_value
+    return OptInfo.from_ones_unknowns(concrete_value & ~unknowns, unknowns), concrete_value
 
 random_knownbits_and_contained_number = strategies.builds(
     build_knownbits_and_contained_number,
@@ -306,7 +306,7 @@ random_knownbits_and_contained_number = strategies.builds(
 )
 
 constant_knownbits = strategies.builds(
-    lambda value: (KnownBits.from_constant(value), value),
+    lambda value: (OptInfo.from_constant(value), value),
     ints
 )
 
@@ -315,14 +315,14 @@ knownbits_and_contained_number = constant_knownbits | random_knownbits_and_conta
 @given(knownbits_and_contained_number)
 def test_hypothesis_contains(t1):
     k1, n1 = t1
-    print(KnownBits.from_constant(n1), k1)
+    print(OptInfo.from_constant(n1), k1)
     assert k1.contains(n1)
 
 @given(knownbits_and_contained_number)
 def test_hypothesis_str_roundtrips(t1):
     k1, n1 = t1
     s = str(k1)
-    k2 = KnownBits.from_str(s)
+    k2 = OptInfo.from_str(s)
     assert k1.ones == k2.ones
     assert k1.unknowns == k2.unknowns
 
@@ -399,11 +399,11 @@ def z3_setup_variables():
     solver = z3.Solver()
 
     n1 = BitVec("n1")
-    k1 = KnownBits(BitVec("n1_zeros"), BitVec("n1_ones"))
+    k1 = OptInfo(BitVec("n1_zeros"), BitVec("n1_ones"))
     solver.add(k1.contains(n1))
 
     n2 = BitVec("n2")
-    k2 = KnownBits(BitVec("n2_zeros"), BitVec("n2_ones"))
+    k2 = OptInfo(BitVec("n2_zeros"), BitVec("n2_ones"))
     solver.add(k2.contains(n2))
     return solver, k1, n1, k2, n2
 
@@ -416,9 +416,9 @@ def prove(cond, solver):
         global model
         model = solver.model()
         print(f"n1={model.eval(n1)}, n2={model.eval(n2)}")
-        counter_example_k1 = KnownBits(model.eval(k1.ones).as_signed_long(),
+        counter_example_k1 = OptInfo(model.eval(k1.ones).as_signed_long(),
                                        model.eval(k1.unknowns).as_signed_long())
-        counter_example_k2 = KnownBits(model.eval(k2.ones).as_signed_long(),
+        counter_example_k2 = OptInfo(model.eval(k2.ones).as_signed_long(),
                                        model.eval(k2.unknowns).as_signed_long())
         print(f"k1={counter_example_k1}, k2={counter_example_k2}")
         print(f"but {cond=} evaluates to {model.eval(cond)}")
@@ -478,7 +478,7 @@ def z3_abstract_eq(k1, k2):
 
     # in the first two cases, unknowns is 0, 1 otherwise
     unknowns = z3_cond(z3.Or(case1cond, case2cond), 0, 1)
-    return KnownBits(ones, unknowns)
+    return OptInfo(ones, unknowns)
 
 def test_z3_abstract_eq_logic():
     solver, k1, n1, k2, n2 = z3_setup_variables()
@@ -526,7 +526,7 @@ def test_check_precision(t1, t2):
 
     ones = BitVec('ones')
     unknowns = BitVec('unknowns')
-    better_k3 = KnownBits(ones, unknowns)
+    better_k3 = OptInfo(ones, unknowns)
     import gc
     gc.collect()
     print(k1, k2, k3)
@@ -534,7 +534,7 @@ def test_check_precision(t1, t2):
     # we're trying to find an example for a better k3, so we use check, without
     # negation:
     res = solver.check(z3.And(
-        # better_k3 should be a valid knownbits instance
+        # better_k3 should be a valid OptInfo instance
         better_k3.is_well_formed(),
         # it should be better than k3, ie there are known bits in better_k3
         # that we don't have in k3
@@ -552,7 +552,7 @@ def test_check_precision(t1, t2):
     # abstract_add
     if res == z3.sat:
         model = solver.model()
-        rk3 = KnownBits(model.eval(ones).as_signed_long(), model.eval(unknowns).as_signed_long())
+        rk3 = OptInfo(model.eval(ones).as_signed_long(), model.eval(unknowns).as_signed_long())
         print("better", rk3)
         assert 0
     if res == z3.unknown:
@@ -669,14 +669,14 @@ def bb_to_str(l : Block, varprefix : str = "var"):
     return "\n".join(res)
 
 def unknown_transfer_functions(*args):
-    return KnownBits.all_unknown()
+    return OptInfo.all_unknown()
 
 def simplify(bb: Block) -> Block:
-    abstract_values = {} # dict mapping Operation to KnownBits
+    abstract_values = {} # dict mapping Operation to OptInfo
 
     def knownbits_of(val : Value):
         if isinstance(val, Constant):
-            return KnownBits.from_constant(val.value)
+            return OptInfo.from_constant(val.value)
         return abstract_values[val]
 
     opt_bb = Block()
@@ -684,7 +684,7 @@ def simplify(bb: Block) -> Block:
         # apply the transfer function on the abstract arguments
         name_without_prefix = op.name.removeprefix("int_")
         method_name = f"abstract_{name_without_prefix}"
-        transfer_function = getattr(KnownBits, method_name, unknown_transfer_functions)
+        transfer_function = getattr(OptInfo, method_name, unknown_transfer_functions)
         abstract_args = [knownbits_of(arg.find()) for arg in op.args]
         abstract_res = abstract_values[op] = transfer_function(*abstract_args)
         # if the result is a constant, we optimize the operation away and make
@@ -746,17 +746,17 @@ optvar3 = dummy(1)"""
 
 
 def simplify2(bb: Block) -> Block:
-    abstract_values = {} # dict mapping Operation to KnownBits
+    abstract_values = {} # dict mapping Operation to OptInfo
 
     def knownbits_of(val : Value):
         if isinstance(val, Constant):
-            return KnownBits.from_constant(val.value)
+            return OptInfo.from_constant(val.value)
         return abstract_values[val]
 
     opt_bb = Block()
     for op in bb:
         name_without_prefix = op.name.removeprefix("int_")
-        transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
+        transfer_function = getattr(OptInfo, f"abstract_{name_without_prefix}", unknown_transfer_functions)
         abstract_args = [knownbits_of(arg.find()) for arg in op.args]
         abstract_res = abstract_values[op] = transfer_function(*abstract_args)
         # if the result is a constant, we optimize the operation away and make
@@ -830,13 +830,13 @@ def simplify3(bb: Block) -> Block:
 
     def knownbits_of(val : Value):
         if isinstance(val, Constant):
-            return KnownBits.from_constant(val.value)
+            return OptInfo.from_constant(val.value)
         return abstract_values[val]
 
     opt_bb = Block()
     for op in bb:
         name_without_prefix = op.name.removeprefix("int_")
-        transfer_function = getattr(KnownBits, f"abstract_{name_without_prefix}", unknown_transfer_functions)
+        transfer_function = getattr(OptInfo, f"abstract_{name_without_prefix}", unknown_transfer_functions)
         abstract_args = [knownbits_of(arg.find()) for arg in op.args]
         abstract_res = abstract_values[op] = transfer_function(*abstract_args)
         if abstract_res.is_constant():
