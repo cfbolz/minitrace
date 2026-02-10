@@ -443,17 +443,28 @@ def test_z3_abstract_and():
     n3 = n1 & n2
     prove(k3.contains(n3), solver)
 
-@pytest.mark.skip() # times out
 def test_z3_abstract_and_is_precise():
     solver, k1, n1, k2, n2 = z3_setup_variables()
     k3 = k1.abstract_and(k2)
     some_other_and = KnownBits(BitVec("n4_ones"), BitVec("n4_unkowns"))
-    n3 = n1 & n2
-    a = BitVec('a')
-    b = BitVec('b')
-    prove(z3.Implies(z3.ForAll([a, b], z3.Implies(z3.And(k1.contains(a), k2.contains(b)), some_other_and.contains(a & b))),
-                     z3.ForAll([b], z3.Implies(k3.contains(b), some_other_and.contains(b)))),
-          solver)
+    #a = BitVec('a')
+    #b = BitVec('b')
+    # the next line this is the soundness condition for some_other_and:
+    #solver.add(z3.ForAll([a, b], z3.Implies(z3.And(k1.contains(a), k2.contains(b)), some_other_and.contains(a & b))))
+    bv = BitVec('bv')
+
+    # what we want to prove is: k3 is a subset of some_other_and to do that, we
+    # pick an arbitrary element of k3, project it back to elments of k1 and k2,
+    # apply the soundness condition
+    solver.add(k3.contains(bv))
+    n1a = k1._force_membership(bv)
+    n2a = k2._force_membership(bv)
+    prove(n1a & n2a == bv, solver)
+    prove(k1.contains(n1a), solver)
+    prove(k2.contains(n2a), solver)
+    # here we manually apply the timeout-inducing ForAll to n1a & n2a
+    solver.add(some_other_and.contains(n1a & n2a))
+    prove(some_other_and.contains(bv), solver)
 
 def test_z3_abstract_or():
     solver, k1, n1, k2, n2 = z3_setup_variables()
