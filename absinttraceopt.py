@@ -188,6 +188,11 @@ class KnownBits:
         #                   x | 0 == x
         return other.ones | self.zeros == -1
 
+    def _force_membership(self, concrete):
+        """ return a number x that shares as many bits with concrete as
+        possible, only changing just enough that x is self """
+        return self.ones | (concrete & self.unknowns)
+
 
 
 # unit tests
@@ -392,11 +397,11 @@ def z3_setup_variables():
     solver = z3.Solver()
 
     n1 = BitVec("n1")
-    k1 = KnownBits(BitVec("n1_ones"), BitVec("n1_unkowns"))
+    k1 = KnownBits(BitVec("n1_ones"), BitVec("n1_unknowns"))
     solver.add(k1.contains(n1))
 
     n2 = BitVec("n2")
-    k2 = KnownBits(BitVec("n2_ones"), BitVec("n2_unkowns"))
+    k2 = KnownBits(BitVec("n2_ones"), BitVec("n2_unknowns"))
     solver.add(k2.contains(n2))
     return solver, k1, n1, k2, n2
 
@@ -582,6 +587,37 @@ def test_check_precision(t1, t2):
         assert 0
     if res == z3.unknown:
         print("timeout")
+
+
+@given(knownbits_and_contained_number, knownbits_and_contained_number)
+def test_hypothesis_force_membership(t1, t2):
+    k1, n1 = t1
+    k2, n2 = t2
+    k3 = k1.abstract_and(k2)
+    n3 = n1 & n2
+    n1a = k1._force_membership(n3)
+    n2a = k2._force_membership(n3)
+    assert n1a & n2a == n3
+    assert k1.contains(n1a)
+    assert k2.contains(n2a)
+    print(k1, k2, k3, bin(n3), bin(n1a), bin(n2a))
+
+def test_prove_force_membership():
+    solver, k1, n1, k2, n2 = z3_setup_variables()
+    n2a = k1._force_membership(n2)
+    prove(k1.contains(n2a), solver)
+
+def test_prove_force_membership_for_and():
+    solver, k1, n1, k2, n2 = z3_setup_variables()
+    n3 = BitVec('bv')
+    k3 = k1.abstract_and(k2)
+    solver.add(k3.contains(n3))
+
+    n1a = k1._force_membership(n3)
+    n2a = k2._force_membership(n3)
+    prove(n1a & n2a == n3, solver)
+    prove(k1.contains(n1a), solver)
+    prove(k2.contains(n2a), solver)
 
 
 def test_match():
